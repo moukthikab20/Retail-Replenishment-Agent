@@ -1,0 +1,11 @@
+store_id,store_name,sku,on_hand,in_transit
+ST001,Downtown Flagship,SKU-1001,18,12
+ST001,Downtown Flagship,SKU-1002,42,0
+ST001,Downtown Flagship,SKU-1003,28,8
+ST001,Downtown Flagship,SKU-1004,15,0
+ST001,Downtown Flagship,SKU-1005,22,6
+ST002,Westside Mall,SKU-1001,36,0
+ST002,Westside Mall,SKU-1002,12,6
+ST002,Westside Mall,SKU-1003,45,0
+ST002,Westside Mall,SKU-1004,30,10
+ST002,Westside Mall,SKU-1005,8,0
