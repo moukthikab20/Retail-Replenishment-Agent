@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy.exc import IntegrityError
+
 from config import ELEVATED_APPROVAL_ROLES, NORMAL_APPROVAL_ROLES, ROLE_CATEGORY_MANAGER
 from database.connection import get_session
 from models.approval import ApprovalRequest
@@ -15,6 +17,8 @@ from repositories import (
     human_review_repository,
     recommendation_repository,
 )
+from services import auth_service
+from services.errors import IdempotencyConflictError
 
 
 def _required_role_for_review(requires_escalation: bool, approval_level: str) -> str:
@@ -30,7 +34,15 @@ def create_approval_request(
     review_id: str,
     actor: str = "system",
     actor_role: str | None = None,
+    user_id: str | None = None,
+    session_id: str | None = None,
 ) -> ApprovalRequest:
+    if actor_role is not None:
+        auth_service.require_permission(
+            actor_role,
+            auth_service.can_request_approval(actor_role),
+            "request approval",
+        )
     with get_session() as session:
         review = human_review_repository.get_human_review(session, review_id)
         if review is None:
@@ -38,8 +50,9 @@ def create_approval_request(
         if review.status == "rejected":
             raise ValueError("Rejected review cannot create an approval request")
 
+        # DB unique on review_id — return any existing approval (idempotent)
         existing = approval_repository.get_latest_approval_for_review(session, review_id)
-        if existing and existing.status == "pending":
+        if existing is not None:
             return existing
 
         required_role = _required_role_for_review(
@@ -55,8 +68,21 @@ def create_approval_request(
             required_role=required_role,
             status="pending",
             requested_at=datetime.now(timezone.utc),
+            user_id=user_id or review.user_id,
+            session_id=session_id or review.session_id,
         )
-        approval_repository.save_approval(session, approval)
+        try:
+            with session.begin_nested():
+                approval_repository.save_approval(session, approval)
+        except IntegrityError as exc:
+            existing_after_race = approval_repository.get_latest_approval_for_review(
+                session, review_id
+            )
+            if existing_after_race is not None:
+                return existing_after_race
+            raise IdempotencyConflictError(
+                "An approval request already exists for this review."
+            ) from exc
         recommendation_repository.update_recommendation_status(
             session, review.recommendation_id, "pending_approval"
         )
@@ -68,6 +94,8 @@ def create_approval_request(
             recommendation_id=review.recommendation_id,
             review_id=review.review_id,
             approval_id=approval.approval_id,
+            user_id=approval.user_id,
+            session_id=approval.session_id,
             details={"required_role": required_role},
         )
         return approval
@@ -99,11 +127,8 @@ def decide_approval(
             or approval.required_role == ROLE_CATEGORY_MANAGER
             else NORMAL_APPROVAL_ROLES
         )
-        # Independently verify role against required role hierarchy
-        if not _role_satisfies(actor_role, approval.required_role):
-            raise PermissionError(
-                f"Role {actor_role} cannot approve; required={approval.required_role}"
-            )
+        # Independently verify role against required role hierarchy (not the model)
+        auth_service.authorize_approval(actor_role, approval.required_role)
 
         now = datetime.now(timezone.utc)
         if decision == "approve":
@@ -151,9 +176,4 @@ def check_approval_status(approval_id: str) -> dict[str, Any]:
 
 
 def _role_satisfies(actor_role: str, required_role: str) -> bool:
-    hierarchy = {
-        "store_manager": 1,
-        "inventory_planner": 2,
-        "category_manager": 3,
-    }
-    return hierarchy.get(actor_role, 0) >= hierarchy.get(required_role, 99)
+    return auth_service.role_satisfies(actor_role, required_role)

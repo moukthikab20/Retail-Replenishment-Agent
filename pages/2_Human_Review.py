@@ -7,14 +7,15 @@ import streamlit as st
 from agent.runner import resume_order_flow, start_order_agent_after_approval
 from services import (
     approval_service,
+    auth_service,
     human_review_service,
     product_service,
     recommendation_service,
 )
+from services.errors import user_facing_error
 from ui_common import (
     bootstrap_app,
     render_card_header,
-    render_dev_identity,
     render_footer,
     render_header,
     risk_badge_html,
@@ -22,10 +23,11 @@ from ui_common import (
 
 
 def main() -> None:
-    bootstrap_app("Human Review | Retail Replenishment Agent")
+    user = bootstrap_app("Human Review | Retail Replenishment Agent")
     render_header("Human Review · Override controls · Formal approval")
-    actor, display_name, role = render_dev_identity()
-    st.sidebar.caption("Development-only identity simulation")
+    actor = user["user_id"]
+    role = user["role"]
+    session_id = user["session_id"]
 
     recommendation_id = st.session_state.get("nav_recommendation_id") or st.session_state.get(
         "recommendation_id"
@@ -38,9 +40,14 @@ def main() -> None:
         return
 
     try:
-        rec = recommendation_service.get_recommendation(recommendation_id)
-    except ValueError as exc:
-        st.error(str(exc))
+        rec = recommendation_service.get_recommendation(
+            recommendation_id,
+            user_id=actor,
+            role=role,
+            check_access=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        st.error(user_facing_error(exc))
         render_footer()
         return
 
@@ -143,11 +150,25 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
+    can_submit = auth_service.can_submit_human_review(role)
+    if not can_submit:
+        st.info("Your role can view this recommendation but cannot submit or reject it.")
+
     c1, c2, c3 = st.columns(3)
     with c1:
-        submit = st.button("Submit for Approval", type="primary", use_container_width=True)
+        submit = st.button(
+            "Submit for Approval",
+            type="primary",
+            use_container_width=True,
+            disabled=not can_submit,
+        )
     with c2:
-        reject = st.button("Reject Recommendation", type="secondary", use_container_width=True)
+        reject = st.button(
+            "Reject Recommendation",
+            type="secondary",
+            use_container_width=True,
+            disabled=not can_submit,
+        )
     with c3:
         if st.button("Back to Analysis", use_container_width=True):
             st.switch_page("pages/1_Analysis.py")
@@ -161,11 +182,15 @@ def main() -> None:
                 human_proposed_quantity=int(human_qty) if choice == "manual" else None,
                 override_reason=override_reason,
                 actor_role=role,
+                user_id=actor,
+                session_id=session_id,
             )
             approval = approval_service.create_approval_request(
                 review_id=review.review_id,
                 actor=actor,
                 actor_role=role,
+                user_id=actor,
+                session_id=session_id,
             )
             st.session_state["review_id"] = review.review_id
             st.session_state["approval_id"] = approval.approval_id
@@ -174,17 +199,20 @@ def main() -> None:
                 f"Submitted. Review {review.review_id}, Approval {approval.approval_id}, "
                 f"required role={approval.required_role}"
             )
-        except Exception as exc:
-            st.error(str(exc))
+        except Exception as exc:  # noqa: BLE001
+            st.error(user_facing_error(exc))
 
     if reject:
-        human_review_service.reject_recommendation(
-            recommendation_id=recommendation_id,
-            actor=actor,
-            actor_role=role,
-            reason="Rejected on Human Review page",
-        )
-        st.warning("Recommendation rejected. No purchase order will be created.")
+        try:
+            human_review_service.reject_recommendation(
+                recommendation_id=recommendation_id,
+                actor=actor,
+                actor_role=role,
+                reason="Rejected on Human Review page",
+            )
+            st.warning("Recommendation rejected. No purchase order will be created.")
+        except Exception as exc:  # noqa: BLE001
+            st.error(user_facing_error(exc))
 
     st.markdown("</div></div>", unsafe_allow_html=True)
 
@@ -192,12 +220,22 @@ def main() -> None:
     required_role = st.session_state.get("required_role")
     if approval_id:
         st.markdown('<div class="card">', unsafe_allow_html=True)
-        render_card_header("Formal Approval (development roles)")
+        render_card_header("Formal Approval (role-gated)")
         st.markdown('<div class="card-body">', unsafe_allow_html=True)
         status = approval_service.check_approval_status(approval_id)
-        st.write(status)
+        st.write(
+            {
+                "approval_id": status.get("approval_id"),
+                "status": status.get("status"),
+                "required_role": status.get("required_role"),
+                "agent_recommended_quantity": status.get("agent_recommended_quantity"),
+                "human_proposed_quantity": status.get("human_proposed_quantity"),
+                "approved_final_quantity": status.get("approved_final_quantity"),
+            }
+        )
 
-        can_approve = _role_ok(role, required_role or status.get("required_role", "store_manager"))
+        needed = required_role or status.get("required_role", "store_manager")
+        can_approve = auth_service.can_approve(role, needed)
         if status.get("status") == "pending":
             if can_approve:
                 a1, a2 = st.columns(2)
@@ -225,8 +263,8 @@ def main() -> None:
                                 )
                             st.session_state["order_flow"] = order_result
                             st.rerun()
-                        except Exception as exc:
-                            st.error(str(exc))
+                        except Exception as exc:  # noqa: BLE001
+                            st.error(user_facing_error(exc))
                 with a2:
                     if st.button("Reject Approval"):
                         try:
@@ -238,8 +276,8 @@ def main() -> None:
                                 rejection_reason="Rejected by approver in UI",
                             )
                             st.warning("Approval rejected.")
-                        except Exception as exc:
-                            st.error(str(exc))
+                        except Exception as exc:  # noqa: BLE001
+                            st.error(user_facing_error(exc))
             else:
                 st.info(
                     f"Approve Final Order hidden — current role `{role}` does not satisfy "
@@ -259,7 +297,7 @@ def main() -> None:
                 f"Sensitive tool paused: {order_flow.get('pending_tool')} "
                 f"args={order_flow.get('pending_args')}"
             )
-            if _role_ok(role, required_role or "category_manager"):
+            if auth_service.can_approve(role, required_role or "category_manager"):
                 r1, r2 = st.columns(2)
                 with r1:
                     if st.button("Approve Sensitive Tool & Resume"):
@@ -333,11 +371,6 @@ def main() -> None:
             st.info("No purchase order found yet for this approval.")
 
     render_footer()
-
-
-def _role_ok(actor_role: str, required_role: str) -> bool:
-    hierarchy = {"store_manager": 1, "inventory_planner": 2, "category_manager": 3}
-    return hierarchy.get(actor_role, 0) >= hierarchy.get(required_role, 99)
 
 
 main()

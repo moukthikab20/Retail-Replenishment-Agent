@@ -12,7 +12,9 @@ from repositories import audit_repository, recommendation_repository
 from services import (
     forecast_service,
     inventory_service,
+    isolation_service,
     product_service,
+    rate_limit_service,
     replenishment_service,
     risk_service,
 )
@@ -54,7 +56,12 @@ def create_recommendation_record(
     rationale: str,
     run_id: str | None = None,
     actor: str = "agent",
+    user_id: str | None = None,
+    session_id: str | None = None,
+    enforce_rate_limit: bool = True,
 ) -> Recommendation:
+    if enforce_rate_limit:
+        rate_limit_service.assert_within_agent_run_limit(user_id)
     analysis = build_analysis(store_id, sku)
     product = analysis["product"]
     inventory = analysis["inventory"]
@@ -73,6 +80,8 @@ def create_recommendation_record(
         rationale=rationale,
         created_at=datetime.now(timezone.utc),
         status="pending_review",
+        user_id=user_id,
+        session_id=session_id,
     )
     extras = {
         "product_name": product.product_name,
@@ -99,6 +108,8 @@ def create_recommendation_record(
             actor=actor,
             run_id=run_id,
             recommendation_id=recommendation.recommendation_id,
+            user_id=user_id,
+            session_id=session_id,
             details={
                 "store_id": store_id,
                 "sku": sku,
@@ -109,7 +120,13 @@ def create_recommendation_record(
     return recommendation
 
 
-def get_recommendation(recommendation_id: str) -> dict[str, Any]:
+def get_recommendation(
+    recommendation_id: str,
+    *,
+    user_id: str | None = None,
+    role: str | None = None,
+    check_access: bool = False,
+) -> dict[str, Any]:
     with get_session() as session:
         recommendation = recommendation_repository.get_recommendation(session, recommendation_id)
         row = recommendation_repository.get_recommendation_row(session, recommendation_id)
@@ -127,6 +144,30 @@ def get_recommendation(recommendation_id: str) -> dict[str, Any]:
                 "case_pack": row.case_pack,
                 "average_daily_sales": row.average_daily_sales,
                 "run_id": row.run_id,
+                "user_id": row.user_id,
+                "session_id": row.session_id,
             }
         )
-        return data
+    if check_access:
+        isolation_service.require_recommendation_access(data, user_id=user_id, role=role)
+    return data
+
+
+def list_recommendations_for_user(user_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+    with get_session() as session:
+        rows = recommendation_repository.list_recent_recommendations(
+            session, limit=limit, user_id=user_id
+        )
+        return [
+            {
+                "recommendation_id": row.recommendation_id,
+                "store_id": row.store_id,
+                "sku": row.sku,
+                "status": row.status,
+                "agent_recommended_quantity": row.agent_recommended_quantity,
+                "user_id": row.user_id,
+                "session_id": row.session_id,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows
+        ]

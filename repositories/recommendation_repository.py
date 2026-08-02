@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -13,7 +12,11 @@ from database.models import RecommendationRow
 from models.recommendation import Recommendation
 
 
-def save_recommendation(session: Session, recommendation: Recommendation, extras: dict | None = None) -> Recommendation:
+def save_recommendation(
+    session: Session,
+    recommendation: Recommendation,
+    extras: dict | None = None,
+) -> Recommendation:
     extras = extras or {}
     row = session.get(RecommendationRow, recommendation.recommendation_id)
     payload = {
@@ -42,6 +45,8 @@ def save_recommendation(session: Session, recommendation: Recommendation, extras
         average_daily_sales=float(extras.get("average_daily_sales", 0)),
         run_id=extras.get("run_id"),
         payload_json=json.dumps(payload, default=str),
+        user_id=recommendation.user_id,
+        session_id=recommendation.session_id,
     )
     if row is None:
         row = RecommendationRow(recommendation_id=recommendation.recommendation_id, **values)
@@ -68,6 +73,8 @@ def get_recommendation(session: Session, recommendation_id: str) -> Recommendati
         rationale=row.rationale,
         created_at=row.created_at,
         status=row.status,
+        user_id=row.user_id,
+        session_id=row.session_id,
     )
 
 
@@ -83,6 +90,16 @@ def update_recommendation_status(session: Session, recommendation_id: str, statu
     session.flush()
 
 
-def list_recent_recommendations(session: Session, limit: int = 20) -> list[RecommendationRow]:
+def list_recent_recommendations(
+    session: Session,
+    limit: int = 20,
+    *,
+    user_id: str | None = None,
+    session_id: str | None = None,
+) -> list[RecommendationRow]:
     stmt = select(RecommendationRow).order_by(RecommendationRow.created_at.desc()).limit(limit)
+    if user_id is not None:
+        stmt = stmt.where(RecommendationRow.user_id == user_id)
+    if session_id is not None:
+        stmt = stmt.where(RecommendationRow.session_id == session_id)
     return list(session.scalars(stmt))

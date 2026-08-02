@@ -1,23 +1,31 @@
-# Retail Replenishment Agent — OpenAI Agents SDK POC
+# Retail Replenishment Agent — Multi-user Demo
 
 Single-agent Streamlit application for Infolob Solutions. Deterministic Python services own forecasting, replenishment math, risk, human override validation, approval policy, and mock purchase orders. The language model coordinates tools and explains results — it does not invent business values.
+
+> **Demonstration Environment — sample data — no real supplier orders.**
 
 ## Architecture
 
 ```
 retail-replenishment-poc/
-├── app.py                      # Home entry
+├── app.py
 ├── pages/
-│   ├── 1_Analysis.py           # Store/SKU analysis + agent recommendation
-│   └── 2_Human_Review.py       # Human override, formal approval, mock PO
-├── agent/                      # OpenAI Agents SDK single agent
-├── services/                   # Deterministic business logic
-├── repositories/               # CSV + SQLite persistence
-├── models/                     # Pydantic domain models
-├── database/                   # SQLAlchemy schema + connection
+│   ├── 1_Analysis.py
+│   ├── 2_Human_Review.py
+│   └── 3_Health.py
+├── agent/
+├── services/
+├── repositories/
+├── models/
+├── database/
+├── alembic/
+├── scripts/
 ├── tests/
-├── data/                       # products, inventory, sales CSVs
-├── styles.py                   # Infolob design system
+├── data/
+├── health.py
+├── render.yaml
+├── DEPLOYMENT.md
+├── styles.py
 ├── config.py
 ├── .env.example
 └── requirements.txt
@@ -25,33 +33,33 @@ retail-replenishment-poc/
 
 ## Quantity separation
 
-These three values are always kept distinct:
-
 | Field | Meaning |
 |-------|---------|
-| `agent_recommended_quantity` | Deterministic agent/service recommendation (never overwritten by humans) |
+| `agent_recommended_quantity` | Deterministic recommendation (never overwritten by humans) |
 | `human_proposed_quantity` | Quantity submitted on Human Review |
 | `approved_final_quantity` | Quantity set only by formal approval |
 
 ## Workflow
 
-1. **Analysis** — select store/SKU, review forecast metrics, run the Retail Replenishment Agent, continue with a saved `recommendation_id`.
-2. **Human Review** — accept the agent quantity or enter a different quantity (override reason required when different).
-3. **Formal approval** — role-gated approve/reject (development identity simulator in the sidebar).
-4. **Mock PO** — created only from an approved `approval_id` (sensitive tool may pause for SDK HITL).
+1. Sign in with demo access code + named user/role
+2. **Analysis** — store/SKU, forecast, agent recommendation
+3. **Human Review** — accept or override quantity, submit for approval
+4. Formal role-gated approve/reject → mock purchase order
 
-## Quick start
+## Local quick start
 
 ```powershell
 cd retail-replenishment-poc
 pip install -r requirements.txt
 copy .env.example .env
-# Optional: set OPENAI_API_KEY and OPENAI_MODEL in .env
+# Optional: OPENAI_API_KEY, OPENAI_MODEL, DEMO_ACCESS_CODE
 
 streamlit run app.py
 ```
 
-Without `OPENAI_API_KEY`, analysis uses the same deterministic service pipeline and still persists recommendations (structured fallback).
+Development login default access code (when `DEMO_ACCESS_CODE` is empty): `infolob-demo`
+
+Without `OPENAI_API_KEY`, analysis uses the deterministic service pipeline and still persists recommendations.
 
 ## Environment
 
@@ -59,9 +67,12 @@ Without `OPENAI_API_KEY`, analysis uses the same deterministic service pipeline 
 |----------|---------|
 | `OPENAI_API_KEY` | Enables live Agents SDK runs |
 | `OPENAI_MODEL` | Model name (default `gpt-4o-mini` when unset) |
-| `DATABASE_URL` | Default `sqlite:///retail_agent.db` |
-| `APP_ENV` | `development` by default |
-| `TRACE_SENSITIVE_DATA` | `false` by default |
+| `DATABASE_URL` | SQLite locally; Postgres on Render |
+| `APP_ENV` | `development` / `production` |
+| `DEMO_ACCESS_CODE` | Shared demo gate |
+| `TRACE_SENSITIVE_DATA` | Keep `false` |
+| `MAX_AGENT_RUNS_PER_USER_PER_HOUR` | Shared-demo rate limit |
+| `RATE_LIMIT_WINDOW_MINUTES` | Rate-limit window |
 
 ## Tests
 
@@ -69,10 +80,10 @@ Without `OPENAI_API_KEY`, analysis uses the same deterministic service pipeline 
 python -m pytest tests -q
 ```
 
-Tests use an isolated temporary SQLite database and do not require a live OpenAI API key.
+## Hosted deployment
 
-## Git checkpoint
+See **[DEPLOYMENT.md](DEPLOYMENT.md)** for GitHub → Render web service + PostgreSQL, migrations, seeding, and custom domains.
 
-Initial POC preserved as tag `poc-before-agent` on branch `proper-agent-development`.
+Health probe: `/Health`
 
 © 2026 Infolob Solutions · Confidential

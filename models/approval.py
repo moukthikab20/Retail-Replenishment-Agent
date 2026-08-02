@@ -20,3 +20,5 @@ class ApprovalRequest(BaseModel):
     approved_by: str | None = None
     approved_at: datetime | None = None
     rejection_reason: str | None = None
+    user_id: str | None = None
+    session_id: str | None = None

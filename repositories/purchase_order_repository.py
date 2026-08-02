@@ -10,11 +10,19 @@ from models.purchase_order import PurchaseOrder
 
 
 def save_purchase_order(session: Session, purchase_order: PurchaseOrder) -> PurchaseOrder:
+    idempotency_key = purchase_order.idempotency_key or purchase_order.approval_id
+
     existing = session.scalars(
         select(PurchaseOrderRow).where(PurchaseOrderRow.approval_id == purchase_order.approval_id)
     ).first()
     if existing is not None:
         return _to_model(existing)
+
+    by_key = session.scalars(
+        select(PurchaseOrderRow).where(PurchaseOrderRow.idempotency_key == idempotency_key)
+    ).first()
+    if by_key is not None:
+        return _to_model(by_key)
 
     row = PurchaseOrderRow(
         purchase_order_id=purchase_order.purchase_order_id,
@@ -28,10 +36,15 @@ def save_purchase_order(session: Session, purchase_order: PurchaseOrder) -> Purc
         override_reason=purchase_order.override_reason,
         status=purchase_order.status,
         created_at=purchase_order.created_at,
+        idempotency_key=idempotency_key,
+        user_id=purchase_order.user_id,
+        session_id=purchase_order.session_id,
     )
     session.add(row)
     session.flush()
-    return purchase_order
+    return PurchaseOrder(
+        **{**purchase_order.model_dump(), "idempotency_key": idempotency_key},
+    )
 
 
 def get_purchase_order(session: Session, purchase_order_id: str) -> PurchaseOrder | None:
@@ -42,6 +55,16 @@ def get_purchase_order(session: Session, purchase_order_id: str) -> PurchaseOrde
 def get_purchase_order_by_approval(session: Session, approval_id: str) -> PurchaseOrder | None:
     row = session.scalars(
         select(PurchaseOrderRow).where(PurchaseOrderRow.approval_id == approval_id)
+    ).first()
+    return _to_model(row) if row else None
+
+
+def get_purchase_order_by_idempotency_key(
+    session: Session,
+    idempotency_key: str,
+) -> PurchaseOrder | None:
+    row = session.scalars(
+        select(PurchaseOrderRow).where(PurchaseOrderRow.idempotency_key == idempotency_key)
     ).first()
     return _to_model(row) if row else None
 
@@ -59,4 +82,7 @@ def _to_model(row: PurchaseOrderRow) -> PurchaseOrder:
         override_reason=row.override_reason,
         status=row.status,
         created_at=row.created_at,
+        idempotency_key=row.idempotency_key,
+        user_id=row.user_id,
+        session_id=row.session_id,
     )

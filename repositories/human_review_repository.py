@@ -37,6 +37,8 @@ def save_human_review(session: Session, review: HumanReplenishmentReview) -> Hum
         case_pack_compliant=review.case_pack_compliant,
         nearest_lower_case_pack=review.nearest_lower_case_pack,
         nearest_higher_case_pack=review.nearest_higher_case_pack,
+        user_id=review.user_id,
+        session_id=review.session_id,
     )
     if row is None:
         row = HumanReviewRow(review_id=review.review_id, **values)
@@ -94,4 +96,6 @@ def _to_model(row: HumanReviewRow) -> HumanReplenishmentReview:
         case_pack_compliant=row.case_pack_compliant,
         nearest_lower_case_pack=row.nearest_lower_case_pack,
         nearest_higher_case_pack=row.nearest_higher_case_pack,
+        user_id=row.user_id,
+        session_id=row.session_id,
     )

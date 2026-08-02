@@ -28,6 +28,8 @@ class HumanReplenishmentReview(BaseModel):
     nearest_lower_case_pack: int | None = None
     nearest_higher_case_pack: int | None = None
     case_pack_compliant: bool = True
+    user_id: str | None = None
+    session_id: str | None = None
 
     @field_validator("difference_percent", mode="before")
     @classmethod

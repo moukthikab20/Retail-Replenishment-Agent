@@ -17,6 +17,7 @@ APP_ENV = os.getenv("APP_ENV", "development")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///retail_agent.db")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
+DEMO_ACCESS_CODE = os.getenv("DEMO_ACCESS_CODE", "")
 TRACE_SENSITIVE_DATA = os.getenv("TRACE_SENSITIVE_DATA", "false").lower() in {
     "1",
     "true",
@@ -27,6 +28,10 @@ AS_OF_DATE = "2026-07-27"
 FORECAST_LOOKBACK_DAYS = 7
 FORECAST_HORIZON_DAYS = 7
 AGENT_MAX_TURNS = 12
+
+# Shared-demo rate limits (deterministic; not enforced by the model)
+MAX_AGENT_RUNS_PER_USER_PER_HOUR = int(os.getenv("MAX_AGENT_RUNS_PER_USER_PER_HOUR", "20"))
+RATE_LIMIT_WINDOW_MINUTES = int(os.getenv("RATE_LIMIT_WINDOW_MINUTES", "60"))
 
 # Product defaults when CSV lacks newer master-data columns
 DEFAULT_UNIT_COST = Decimal("0.00")
@@ -43,17 +48,56 @@ RISK_ON_HAND_FORECAST_RATIO = 0.3
 ESCALATION_WARNING_PERCENT = Decimal("10")
 ESCALATION_REQUIRED_PERCENT = Decimal("25")
 
-# Approval roles (development-only simulated identities)
+# Demo authentication roles (authorization is deterministic Python, not the model)
+ROLE_VIEWER = "viewer"
 ROLE_STORE_MANAGER = "store_manager"
 ROLE_INVENTORY_PLANNER = "inventory_planner"
 ROLE_CATEGORY_MANAGER = "category_manager"
+ROLE_ADMINISTRATOR = "administrator"
 
-DEV_USERS = {
-    "alex.store": {"display_name": "Alex Store Manager", "role": ROLE_STORE_MANAGER},
-    "jamie.planner": {"display_name": "Jamie Inventory Planner", "role": ROLE_INVENTORY_PLANNER},
-    "casey.category": {"display_name": "Casey Category Manager", "role": ROLE_CATEGORY_MANAGER},
+ROLE_HIERARCHY = {
+    ROLE_VIEWER: 1,
+    ROLE_STORE_MANAGER: 2,
+    ROLE_INVENTORY_PLANNER: 3,
+    ROLE_CATEGORY_MANAGER: 4,
+    ROLE_ADMINISTRATOR: 5,
 }
 
+DEMO_USERS = {
+    "riley.viewer": {
+        "display_name": "Riley Viewer",
+        "role": ROLE_VIEWER,
+    },
+    "alex.store": {
+        "display_name": "Alex Store Manager",
+        "role": ROLE_STORE_MANAGER,
+    },
+    "jamie.planner": {
+        "display_name": "Jamie Inventory Planner",
+        "role": ROLE_INVENTORY_PLANNER,
+    },
+    "casey.category": {
+        "display_name": "Casey Category Manager",
+        "role": ROLE_CATEGORY_MANAGER,
+    },
+    "admin.demo": {
+        "display_name": "Dana Administrator",
+        "role": ROLE_ADMINISTRATOR,
+    },
+}
+
+# Backward-compatible alias used by older UI helpers/tests
+DEV_USERS = DEMO_USERS
+
 # Roles allowed for normal vs elevated approval
-NORMAL_APPROVAL_ROLES = {ROLE_STORE_MANAGER, ROLE_INVENTORY_PLANNER, ROLE_CATEGORY_MANAGER}
-ELEVATED_APPROVAL_ROLES = {ROLE_INVENTORY_PLANNER, ROLE_CATEGORY_MANAGER}
+NORMAL_APPROVAL_ROLES = {
+    ROLE_STORE_MANAGER,
+    ROLE_INVENTORY_PLANNER,
+    ROLE_CATEGORY_MANAGER,
+    ROLE_ADMINISTRATOR,
+}
+ELEVATED_APPROVAL_ROLES = {
+    ROLE_INVENTORY_PLANNER,
+    ROLE_CATEGORY_MANAGER,
+    ROLE_ADMINISTRATOR,
+}

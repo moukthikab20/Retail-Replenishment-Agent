@@ -258,6 +258,19 @@ div[data-testid="stButton"] button[kind="secondary"] {
     text-align: left;
     font-size: 0.88rem;
 }
+
+.demo-banner {
+    background: #FFF7ED;
+    border: 1px solid #FDBA74;
+    border-left: 4px solid #D97706;
+    color: #9A3412;
+    border-radius: 6px;
+    padding: 0.65rem 1rem;
+    margin: 0 0 1rem 0;
+    font-size: 0.88rem;
+    font-weight: 600;
+    text-align: left;
+}
 """
 
 

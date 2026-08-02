@@ -19,6 +19,8 @@ class Recommendation(BaseModel):
     rationale: str
     created_at: datetime
     status: str = "pending_review"
+    user_id: str | None = None
+    session_id: str | None = None
 
     @field_validator("forecast_units", mode="before")
     @classmethod

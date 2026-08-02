@@ -35,7 +35,15 @@ def _configure_tracing() -> None:
         logger.debug("TRACE_SENSITIVE_DATA disabled")
 
 
-def run_analysis(store_id: str, sku: str) -> dict[str, Any]:
+def run_analysis(
+    store_id: str,
+    sku: str,
+    *,
+    user_id: str | None = None,
+    session_id: str | None = None,
+    actor: str = "agent",
+    actor_role: str | None = None,
+) -> dict[str, Any]:
     """
     Run analysis for store/SKU.
 
@@ -47,7 +55,14 @@ def run_analysis(store_id: str, sku: str) -> dict[str, Any]:
     run_id = f"RUN-{uuid4().hex[:12]}"
 
     if not OPENAI_API_KEY:
-        return _deterministic_analysis(store_id, sku, run_id)
+        return _deterministic_analysis(
+            store_id,
+            sku,
+            run_id,
+            user_id=user_id,
+            session_id=session_id,
+            actor=actor,
+        )
 
     agent = build_replenishment_agent()
     prompt = (
@@ -66,7 +81,14 @@ def run_analysis(store_id: str, sku: str) -> dict[str, Any]:
         )
     except MaxTurnsExceeded as exc:
         logger.exception("Agent exceeded max turns")
-        decision = _deterministic_analysis(store_id, sku, run_id)
+        decision = _deterministic_analysis(
+            store_id,
+            sku,
+            run_id,
+            user_id=user_id,
+            session_id=session_id,
+            actor=actor,
+        )
         decision["explanation"] = (
             decision["explanation"]
             + f" (Agent stopped: max turns exceeded — {exc})"
@@ -91,7 +113,14 @@ def run_analysis(store_id: str, sku: str) -> dict[str, Any]:
     elif isinstance(output, dict):
         data = output
     else:
-        data = _deterministic_analysis(store_id, sku, run_id)
+        data = _deterministic_analysis(
+            store_id,
+            sku,
+            run_id,
+            user_id=user_id,
+            session_id=session_id,
+            actor=actor,
+        )
         data["explanation"] = str(output)
     data["run_id"] = run_id
     data["status"] = "completed"
@@ -267,7 +296,15 @@ def start_order_agent_after_approval(
     return payload
 
 
-def _deterministic_analysis(store_id: str, sku: str, run_id: str) -> dict[str, Any]:
+def _deterministic_analysis(
+    store_id: str,
+    sku: str,
+    run_id: str,
+    *,
+    user_id: str | None = None,
+    session_id: str | None = None,
+    actor: str = "deterministic_orchestrator",
+) -> dict[str, Any]:
     analysis = recommendation_service.build_analysis(store_id, sku)
     product = analysis["product"]
     inventory = analysis["inventory"]
@@ -287,7 +324,9 @@ def _deterministic_analysis(store_id: str, sku: str, run_id: str) -> dict[str, A
         sku,
         rationale=rationale,
         run_id=run_id,
-        actor="deterministic_orchestrator",
+        actor=actor,
+        user_id=user_id,
+        session_id=session_id,
     )
     decision = ReplenishmentAgentDecision(
         recommendation_id=recommendation.recommendation_id,

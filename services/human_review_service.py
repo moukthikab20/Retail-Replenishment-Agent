@@ -16,7 +16,7 @@ from repositories import (
     recommendation_repository,
 )
 from repositories.recommendation_repository import get_recommendation_row
-from services import inventory_service, product_service, risk_service
+from services import auth_service, inventory_service, product_service, risk_service
 from services.replenishment_service import nearest_case_pack_quantities
 
 
@@ -161,7 +161,15 @@ def submit_human_review(
     human_proposed_quantity: int | None = None,
     override_reason: str | None = None,
     actor_role: str | None = None,
+    user_id: str | None = None,
+    session_id: str | None = None,
 ) -> HumanReplenishmentReview:
+    if actor_role is not None:
+        auth_service.require_permission(
+            actor_role,
+            auth_service.can_submit_human_review(actor_role),
+            "submit a human review",
+        )
     preview = preview_human_review(
         recommendation_id=recommendation_id,
         choice=choice,
@@ -195,6 +203,8 @@ def submit_human_review(
         nearest_lower_case_pack=preview["nearest_lower_case_pack"],
         nearest_higher_case_pack=preview["nearest_higher_case_pack"],
         case_pack_compliant=preview["case_pack_compliant"],
+        user_id=user_id or submitted_by,
+        session_id=session_id,
     )
 
     with get_session() as session:
@@ -210,6 +220,8 @@ def submit_human_review(
                 actor_role=actor_role,
                 recommendation_id=recommendation_id,
                 review_id=review.review_id,
+                user_id=review.user_id,
+                session_id=review.session_id,
                 details={
                     "agent_recommended_quantity": review.agent_recommended_quantity,
                     "human_proposed_quantity": review.human_proposed_quantity,
@@ -222,6 +234,8 @@ def submit_human_review(
             actor_role=actor_role,
             recommendation_id=recommendation_id,
             review_id=review.review_id,
+            user_id=review.user_id,
+            session_id=review.session_id,
             details={"approval_level": review.approval_level},
         )
     return review
@@ -234,6 +248,12 @@ def reject_recommendation(
     actor_role: str | None = None,
     reason: str | None = None,
 ) -> None:
+    if actor_role is not None:
+        auth_service.require_permission(
+            actor_role,
+            auth_service.can_submit_human_review(actor_role),
+            "reject a recommendation",
+        )
     with get_session() as session:
         recommendation_repository.update_recommendation_status(
             session, recommendation_id, "rejected"

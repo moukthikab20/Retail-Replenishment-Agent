@@ -35,6 +35,8 @@ class RecommendationRow(Base):
     average_daily_sales: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
 
 
 class HumanReviewRow(Base):
@@ -59,10 +61,13 @@ class HumanReviewRow(Base):
     case_pack_compliant: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     nearest_lower_case_pack: Mapped[int | None] = mapped_column(Integer, nullable=True)
     nearest_higher_case_pack: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
 
 
 class ApprovalRow(Base):
     __tablename__ = "approvals"
+    __table_args__ = (UniqueConstraint("review_id", name="uq_approval_review_id"),)
 
     approval_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     review_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -76,11 +81,16 @@ class ApprovalRow(Base):
     approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
 
 
 class PurchaseOrderRow(Base):
     __tablename__ = "purchase_orders"
-    __table_args__ = (UniqueConstraint("approval_id", name="uq_po_approval_id"),)
+    __table_args__ = (
+        UniqueConstraint("approval_id", name="uq_po_approval_id"),
+        UniqueConstraint("idempotency_key", name="uq_po_idempotency_key"),
+    )
 
     purchase_order_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     approval_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -93,6 +103,10 @@ class PurchaseOrderRow(Base):
     override_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(64), nullable=False, default="Draft — Mock ERP")
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # Stable key for retry-safe order execution (defaults to approval_id)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
 
 
 class AuditEventRow(Base):
@@ -109,10 +123,15 @@ class AuditEventRow(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     details_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
 
 
 class AgentRunStateRow(Base):
     __tablename__ = "agent_run_states"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_agent_run_idempotency_key"),
+    )
 
     run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     recommendation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
@@ -123,3 +142,7 @@ class AgentRunStateRow(Base):
     pending_tool_args_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    # Optional stable key for retry-safe order/HITL execution
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)

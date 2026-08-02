@@ -15,18 +15,38 @@ from repositories import (
     purchase_order_repository,
     recommendation_repository,
 )
+from services import auth_service
 
 
-def create_mock_purchase_order(approval_id: str, *, actor: str = "system", actor_role: str | None = None) -> PurchaseOrder:
+def create_mock_purchase_order(
+    approval_id: str,
+    *,
+    actor: str = "system",
+    actor_role: str | None = None,
+    user_id: str | None = None,
+    session_id: str | None = None,
+    idempotency_key: str | None = None,
+) -> PurchaseOrder:
     """
     Create an idempotent mock purchase order from a verified approval.
 
-    Accepts only approval_id. Never accepts an arbitrary quantity from the model.
+    Accepts only approval_id (plus optional ownership/idempotency metadata).
+    Never accepts an arbitrary quantity from the model.
     """
+    if actor_role is not None:
+        auth_service.require_permission(
+            actor_role,
+            auth_service.can_create_purchase_order(actor_role),
+            "create a purchase order",
+        )
+    key = idempotency_key or f"po:{approval_id}"
     with get_session() as session:
         existing = purchase_order_repository.get_purchase_order_by_approval(session, approval_id)
         if existing is not None:
             return existing
+        existing_key = purchase_order_repository.get_purchase_order_by_idempotency_key(session, key)
+        if existing_key is not None:
+            return existing_key
 
         approval = approval_repository.get_approval(session, approval_id)
         if approval is None:
@@ -59,6 +79,9 @@ def create_mock_purchase_order(approval_id: str, *, actor: str = "system", actor
             override_reason=review.override_reason,
             status="Draft — Mock ERP",
             created_at=datetime.now(timezone.utc),
+            idempotency_key=key,
+            user_id=user_id or approval.user_id,
+            session_id=session_id or approval.session_id,
         )
         try:
             saved = purchase_order_repository.save_purchase_order(session, po)
@@ -74,14 +97,21 @@ def create_mock_purchase_order(approval_id: str, *, actor: str = "system", actor
                 review_id=review.review_id,
                 approval_id=approval.approval_id,
                 purchase_order_id=saved.purchase_order_id,
+                user_id=saved.user_id,
+                session_id=saved.session_id,
                 details={
                     "agent_recommended_quantity": saved.agent_recommended_quantity,
                     "human_proposed_quantity": saved.human_proposed_quantity,
                     "approved_final_quantity": saved.approved_final_quantity,
+                    "idempotency_key": saved.idempotency_key,
                 },
             )
             return saved
         except Exception as exc:
+            # Concurrent insert: return existing idempotent row if present
+            raced = purchase_order_repository.get_purchase_order_by_approval(session, approval_id)
+            if raced is not None:
+                return raced
             audit_repository.write_audit_event(
                 session,
                 "purchase_order_failed",

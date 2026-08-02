@@ -19,3 +19,6 @@ class PurchaseOrder(BaseModel):
     override_reason: str | None = None
     status: str = "Draft — Mock ERP"
     created_at: datetime
+    idempotency_key: str | None = None
+    user_id: str | None = None
+    session_id: str | None = None

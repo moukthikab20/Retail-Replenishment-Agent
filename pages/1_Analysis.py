@@ -8,11 +8,11 @@ import streamlit as st
 
 from config import AS_OF_DATE
 from repositories import csv_repository
-from services import forecast_service, product_service, recommendation_service
+from services import auth_service, forecast_service, product_service, recommendation_service
+from services.errors import user_facing_error
 from ui_common import (
     bootstrap_app,
     render_card_header,
-    render_dev_identity,
     render_footer,
     render_header,
     risk_badge_html,
@@ -20,10 +20,11 @@ from ui_common import (
 
 
 def main() -> None:
-    bootstrap_app("Analysis | Retail Replenishment Agent")
+    user = bootstrap_app("Analysis | Retail Replenishment Agent")
     render_header("Analysis · Seven-day forecast · Agent recommendation")
-    actor, display_name, role = render_dev_identity()
-    st.sidebar.caption(f"Signed in as {display_name} ({role})")
+    actor = user["user_id"]
+    role = user["role"]
+    session_id = user["session_id"]
 
     stores = product_service.list_stores()
     store_options = {s["store_name"]: s["store_id"] for s in stores}
@@ -133,15 +134,29 @@ def main() -> None:
         st.session_state.pop("analysis_decision", None)
         st.session_state.pop("recommendation_id", None)
 
-    if st.button("Run Agent Analysis", type="primary"):
+    can_run = auth_service.can_run_analysis(role)
+    if not can_run:
+        st.info("Your role can view forecast metrics but cannot run the agent.")
+
+    if st.button("Run Agent Analysis", type="primary", disabled=not can_run):
         with st.spinner("Retail Replenishment Agent analyzing…"):
             from agent.runner import run_analysis
 
-            decision = run_analysis(store_id, selected_sku)
-            st.session_state["analysis_decision"] = decision
-            if decision.get("recommendation_id"):
-                st.session_state["recommendation_id"] = decision["recommendation_id"]
-        st.rerun()
+            try:
+                decision = run_analysis(
+                    store_id,
+                    selected_sku,
+                    user_id=actor,
+                    session_id=session_id,
+                    actor=actor,
+                    actor_role=role,
+                )
+                st.session_state["analysis_decision"] = decision
+                if decision.get("recommendation_id"):
+                    st.session_state["recommendation_id"] = decision["recommendation_id"]
+                st.rerun()
+            except Exception as exc:  # noqa: BLE001
+                st.error(user_facing_error(exc))
 
     decision = st.session_state.get("analysis_decision")
     if decision:
@@ -211,6 +226,8 @@ def main() -> None:
                 actor=actor,
                 actor_role=role,
                 recommendation_id=st.session_state["recommendation_id"],
+                user_id=actor,
+                session_id=session_id,
             )
         st.switch_page("pages/2_Human_Review.py")
 

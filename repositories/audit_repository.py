@@ -25,6 +25,8 @@ def write_audit_event(
     approval_id: str | None = None,
     purchase_order_id: str | None = None,
     details: dict[str, Any] | None = None,
+    user_id: str | None = None,
+    session_id: str | None = None,
 ) -> str:
     event_id = f"EVT-{uuid4().hex[:12]}"
     sanitized = _sanitize(details or {})
@@ -40,6 +42,8 @@ def write_audit_event(
         timestamp=datetime.now(timezone.utc),
         event_type=event_type,
         details_json=json.dumps(sanitized, default=str),
+        user_id=user_id,
+        session_id=session_id,
     )
     session.add(row)
     session.flush()
@@ -56,10 +60,19 @@ def save_agent_run_state(
     approval_id: str | None = None,
     pending_tool_name: str | None = None,
     pending_tool_args: dict[str, Any] | None = None,
+    user_id: str | None = None,
+    session_id: str | None = None,
+    idempotency_key: str | None = None,
 ) -> None:
     now = datetime.now(timezone.utc)
     row = session.get(AgentRunStateRow, run_id)
     args_json = json.dumps(pending_tool_args or {}, default=str)
+    if row is None and idempotency_key:
+        existing_key = session.scalars(
+            select(AgentRunStateRow).where(AgentRunStateRow.idempotency_key == idempotency_key)
+        ).first()
+        if existing_key is not None:
+            row = existing_key
     if row is None:
         row = AgentRunStateRow(
             run_id=run_id,
@@ -71,6 +84,9 @@ def save_agent_run_state(
             pending_tool_args_json=args_json,
             created_at=now,
             updated_at=now,
+            user_id=user_id,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
         )
         session.add(row)
     else:
@@ -81,6 +97,12 @@ def save_agent_run_state(
         row.pending_tool_name = pending_tool_name
         row.pending_tool_args_json = args_json
         row.updated_at = now
+        if user_id is not None:
+            row.user_id = user_id
+        if session_id is not None:
+            row.session_id = session_id
+        if idempotency_key is not None:
+            row.idempotency_key = idempotency_key
     session.flush()
 
 

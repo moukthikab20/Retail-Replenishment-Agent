@@ -23,6 +23,8 @@ def save_approval(session: Session, approval: ApprovalRequest) -> ApprovalReques
         approved_by=approval.approved_by,
         approved_at=approval.approved_at,
         rejection_reason=approval.rejection_reason,
+        user_id=approval.user_id,
+        session_id=approval.session_id,
     )
     if row is None:
         row = ApprovalRow(approval_id=approval.approval_id, **values)
@@ -66,4 +68,6 @@ def _to_model(row: ApprovalRow) -> ApprovalRequest:
         approved_by=row.approved_by,
         approved_at=row.approved_at,
         rejection_reason=row.rejection_reason,
+        user_id=row.user_id,
+        session_id=row.session_id,
     )

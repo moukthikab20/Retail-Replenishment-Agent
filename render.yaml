@@ -1,0 +1,46 @@
+# Render Blueprint for the multi-user retail replenishment demo.
+# Docs: https://render.com/docs/blueprint-spec
+
+databases:
+  - name: retail-replenishment-db
+    plan: free
+    databaseName: retail_replenishment
+    user: retail_app
+
+services:
+  - type: web
+    name: retail-replenishment-poc
+    runtime: python
+    plan: free
+    region: oregon
+    branch: proper-agent-development
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    preDeployCommand: python -m alembic upgrade head && python scripts/seed_demo_data.py
+    startCommand: >-
+      streamlit run app.py
+      --server.address 0.0.0.0
+      --server.port $PORT
+      --server.headless true
+    healthCheckPath: /Health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: PYTHON_VERSION
+        value: "3.11.7"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: retail-replenishment-db
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: DEMO_ACCESS_CODE
+        sync: false
+      - key: TRACE_SENSITIVE_DATA
+        value: "false"
+      - key: MAX_AGENT_RUNS_PER_USER_PER_HOUR
+        value: "20"
+      - key: RATE_LIMIT_WINDOW_MINUTES
+        value: "60"
