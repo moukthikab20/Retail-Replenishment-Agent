@@ -29,19 +29,22 @@ def test_tools_registered():
     for required in [
         "get_product_details",
         "get_inventory_position",
+        "get_open_orders",
         "get_demand_forecast",
         "calculate_replenishment",
         "assess_replenishment_risk",
         "create_recommendation_record",
+        "get_recommendation",
+        "get_human_review_status",
+        "get_approval_status",
         "create_mock_purchase_order",
+        "get_purchase_order_status",
     ]:
         assert required in names
 
 
 def test_order_tool_needs_approval():
-    assert getattr(create_mock_purchase_order, "needs_approval", False) is True or getattr(
-        create_mock_purchase_order, "name", ""
-    ) == "create_mock_purchase_order"
+    assert create_mock_purchase_order.needs_approval is True
 
 
 def test_deterministic_analysis_calls_pipeline_and_does_not_create_order(monkeypatch):
@@ -51,7 +54,19 @@ def test_deterministic_analysis_calls_pipeline_and_does_not_create_order(monkeyp
     assert decision["status"] == "completed"
     assert decision["recommendation_id"]
     assert decision["agent_recommended_quantity"] >= 0
-    assert decision["next_action"] == "await_human_review"
+    assert decision["next_action"] in {
+        "review_recommendation",
+        "no_order_required",
+        "manual_data_review",
+        "blocked",
+    }
+    # Structured fields — do not rely on parsing explanation prose
+    assert "agent_recommended_quantity" in decision
+    assert "recommendation_id" in decision
+    assert "forecast_units" in decision
+    assert "open_order_quantity" in decision
+    assert "case_pack" in decision
+    assert isinstance(decision.get("tools_used"), list)
     assert "create_mock_purchase_order" not in decision.get("tools_used", [])
     # quantity comes from services, not invented prose
     rec = recommendation_service.get_recommendation(decision["recommendation_id"])

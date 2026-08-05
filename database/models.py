@@ -146,3 +146,16 @@ class AgentRunStateRow(Base):
     session_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     # Optional stable key for retry-safe order/HITL execution
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
+class FollowUpSessionMessageRow(Base):
+    """Conversational memory for follow-up Q&A — not authoritative business state."""
+
+    __tablename__ = "agent_follow_up_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_key: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    recommendation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    item_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

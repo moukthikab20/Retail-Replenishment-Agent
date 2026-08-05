@@ -168,7 +168,7 @@ def submit_human_review(
         auth_service.require_permission(
             actor_role,
             auth_service.can_submit_human_review(actor_role),
-            "submit a human review",
+            "submit a review",
         )
     preview = preview_human_review(
         recommendation_id=recommendation_id,
@@ -282,6 +282,25 @@ def get_human_review_status(recommendation_id: str) -> dict[str, Any]:
         }
     return {
         "recommendation_id": recommendation_id,
+        "review_id": review.review_id,
+        "status": review.status,
+        "review": review.model_dump(mode="json"),
+    }
+
+
+def get_human_review_status_by_review_id(review_id: str) -> dict[str, Any]:
+    """Read a stored human review by review_id. Does not modify it."""
+    with get_session() as session:
+        review = human_review_repository.get_human_review(session, review_id)
+    if review is None:
+        return {
+            "review_id": review_id,
+            "status": "not_found",
+            "review": None,
+        }
+    return {
+        "review_id": review.review_id,
+        "recommendation_id": review.recommendation_id,
         "status": review.status,
         "review": review.model_dump(mode="json"),
     }

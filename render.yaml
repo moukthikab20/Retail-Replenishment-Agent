@@ -16,12 +16,13 @@ services:
     branch: proper-agent-development
     autoDeploy: true
     buildCommand: pip install -r requirements.txt
-    preDeployCommand: python -m alembic upgrade head && python scripts/seed_demo_data.py
     startCommand: >-
+      bash -c "python scripts/migrate_and_seed.py &&
       streamlit run app.py
       --server.address 0.0.0.0
       --server.port $PORT
       --server.headless true
+      --client.showSidebarNavigation=false"
     healthCheckPath: /Health
     envVars:
       - key: APP_ENV

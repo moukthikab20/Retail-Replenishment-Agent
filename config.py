@@ -18,7 +18,16 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///retail_agent.db")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
 DEMO_ACCESS_CODE = os.getenv("DEMO_ACCESS_CODE", "")
-TRACE_SENSITIVE_DATA = os.getenv("TRACE_SENSITIVE_DATA", "false").lower() in {
+
+# Tracing — sensitive payloads off by default (Agents SDK RunConfig flag).
+_TRACE_SENSITIVE_RAW = os.getenv(
+    "TRACE_INCLUDE_SENSITIVE_DATA",
+    os.getenv("TRACE_SENSITIVE_DATA", "false"),
+).lower()
+TRACE_INCLUDE_SENSITIVE_DATA = _TRACE_SENSITIVE_RAW in {"1", "true", "yes"}
+# Backward-compatible alias used by older docs/tests.
+TRACE_SENSITIVE_DATA = TRACE_INCLUDE_SENSITIVE_DATA
+AGENT_TRACING_DISABLED = os.getenv("AGENT_TRACING_DISABLED", "false").lower() in {
     "1",
     "true",
     "yes",
@@ -27,7 +36,26 @@ TRACE_SENSITIVE_DATA = os.getenv("TRACE_SENSITIVE_DATA", "false").lower() in {
 AS_OF_DATE = "2026-07-27"
 FORECAST_LOOKBACK_DAYS = 7
 FORECAST_HORIZON_DAYS = 7
-AGENT_MAX_TURNS = 12
+AGENT_MAX_TURNS = int(os.getenv("AGENT_MAX_TURNS", "12"))
+# Follow-up Q&A uses a tighter turn budget than full analysis.
+FOLLOW_UP_MAX_TURNS = int(os.getenv("FOLLOW_UP_MAX_TURNS", "8"))
+# Inventory older than this many days vs AS_OF_DATE is treated as stale for the agent.
+INVENTORY_STALE_DAYS = int(os.getenv("INVENTORY_STALE_DAYS", "14"))
+
+# Persistent Agents SDK session store for follow-up conversation history.
+AGENT_SESSION_DB_PATH = os.getenv(
+    "AGENT_SESSION_DB_PATH",
+    str(BASE_DIR / "data" / "agent_sessions.sqlite"),
+)
+
+WORKFLOW_ANALYSIS = "retail_replenishment_analysis"
+WORKFLOW_FOLLOW_UP = "retail_replenishment_follow_up"
+WORKFLOW_ORDER = "retail_replenishment_order"
+
+# Pending sensitive-tool HITL resume window (browser refresh safe via DB state).
+HITL_RESUME_TTL_MINUTES = int(os.getenv("HITL_RESUME_TTL_MINUTES", "120"))
+AGENT_RUN_STATE_VERSION = 1
+
 
 # Shared-demo rate limits (deterministic; not enforced by the model)
 MAX_AGENT_RUNS_PER_USER_PER_HOUR = int(os.getenv("MAX_AGENT_RUNS_PER_USER_PER_HOUR", "20"))

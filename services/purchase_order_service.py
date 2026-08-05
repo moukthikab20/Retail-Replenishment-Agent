@@ -65,7 +65,7 @@ def create_mock_purchase_order(
             raise ValueError("Recommendation missing for approval")
         review = human_review_repository.get_human_review(session, approval.review_id)
         if review is None:
-            raise ValueError("Human review missing for approval")
+            raise ValueError("Review missing for approval")
 
         po = PurchaseOrder(
             purchase_order_id=f"PO-MOCK-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:6]}",

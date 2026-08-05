@@ -175,5 +175,10 @@ def check_approval_status(approval_id: str) -> dict[str, Any]:
     return approval.model_dump(mode="json")
 
 
+def get_approval_status(approval_id: str) -> dict[str, Any]:
+    """Alias used by agent tool contracts."""
+    return check_approval_status(approval_id)
+
+
 def _role_satisfies(actor_role: str, required_role: str) -> bool:
     return auth_service.role_satisfies(actor_role, required_role)

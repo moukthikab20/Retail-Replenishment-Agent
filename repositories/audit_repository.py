@@ -110,6 +110,34 @@ def get_agent_run_state(session: Session, run_id: str) -> AgentRunStateRow | Non
     return session.get(AgentRunStateRow, run_id)
 
 
+def get_paused_run_by_approval(
+    session: Session,
+    approval_id: str,
+) -> AgentRunStateRow | None:
+    """Latest paused HITL run for an approval (browser-refresh recovery)."""
+    stmt = (
+        select(AgentRunStateRow)
+        .where(
+            AgentRunStateRow.approval_id == approval_id,
+            AgentRunStateRow.status == "paused",
+        )
+        .order_by(AgentRunStateRow.updated_at.desc())
+    )
+    return session.scalars(stmt).first()
+
+
+def get_latest_run_by_approval(
+    session: Session,
+    approval_id: str,
+) -> AgentRunStateRow | None:
+    stmt = (
+        select(AgentRunStateRow)
+        .where(AgentRunStateRow.approval_id == approval_id)
+        .order_by(AgentRunStateRow.updated_at.desc())
+    )
+    return session.scalars(stmt).first()
+
+
 def list_audit_events(
     session: Session,
     recommendation_id: str | None = None,

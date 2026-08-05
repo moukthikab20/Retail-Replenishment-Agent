@@ -1,0 +1,8 @@
+# Prevent Streamlit's built-in multipage sidebar from mounting.
+# Custom Infolob rail navigation is rendered in ui_common.render_left_nav().
+# This eliminates the flash of default page links on load / page switch.
+[client]
+showSidebarNavigation = false
+
+[browser]
+gatherUsageStats = false

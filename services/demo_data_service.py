@@ -12,6 +12,7 @@ from database.models import (
     AgentRunStateRow,
     ApprovalRow,
     AuditEventRow,
+    FollowUpSessionMessageRow,
     HumanReviewRow,
     PurchaseOrderRow,
     RecommendationRow,
@@ -38,6 +39,7 @@ def reset_demo_workflow_data(*, actor: str, actor_role: str) -> dict[str, Any]:
             (ApprovalRow, "approvals"),
             (HumanReviewRow, "human_reviews"),
             (AgentRunStateRow, "agent_run_states"),
+            (FollowUpSessionMessageRow, "agent_follow_up_messages"),
             (AuditEventRow, "audit_events"),
             (RecommendationRow, "recommendations"),
         ):

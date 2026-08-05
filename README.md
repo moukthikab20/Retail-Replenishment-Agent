@@ -11,7 +11,7 @@ retail-replenishment-poc/
 ├── app.py
 ├── pages/
 │   ├── 1_Analysis.py
-│   ├── 2_Human_Review.py
+│   ├── 2_Review.py
 │   └── 3_Health.py
 ├── agent/
 ├── services/
@@ -36,14 +36,14 @@ retail-replenishment-poc/
 | Field | Meaning |
 |-------|---------|
 | `agent_recommended_quantity` | Deterministic recommendation (never overwritten by humans) |
-| `human_proposed_quantity` | Quantity submitted on Human Review |
+| `human_proposed_quantity` | Quantity submitted on Review |
 | `approved_final_quantity` | Quantity set only by formal approval |
 
 ## Workflow
 
 1. Sign in with demo access code + named user/role
 2. **Analysis** — store/SKU, forecast, agent recommendation
-3. **Human Review** — accept or override quantity, submit for approval
+3. **Review** — accept or override quantity, submit for approval
 4. Formal role-gated approve/reject → mock purchase order
 
 ## Local quick start

@@ -191,7 +191,7 @@ In the UI, sign in as **Dana Administrator** (`admin.demo`) and use **Reset Demo
 1. Open `/Health` — status `ok`, database dialect `postgresql`
 2. Sign in with access code + named demo user
 3. Run Analysis as `alex.store` and confirm a `recommendation_id`
-4. Continue to Human Review; submit for approval
+4. Continue to Review; submit for approval
 5. Approve with a role that satisfies the required level
 6. Confirm mock PO IDs only (no real supplier/ERP calls)
 7. Confirm a second user session can create its own recommendations

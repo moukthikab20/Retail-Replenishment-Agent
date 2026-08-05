@@ -103,3 +103,23 @@ def list_recent_recommendations(
     if session_id is not None:
         stmt = stmt.where(RecommendationRow.session_id == session_id)
     return list(session.scalars(stmt))
+
+
+def list_recommendations_for_store_sku(
+    session: Session,
+    store_id: str,
+    sku: str,
+    *,
+    limit: int = 10,
+) -> list[RecommendationRow]:
+    """Newest-first recommendation history for a store/SKU (read-only listing)."""
+    stmt = (
+        select(RecommendationRow)
+        .where(
+            RecommendationRow.store_id == store_id,
+            RecommendationRow.sku == sku,
+        )
+        .order_by(RecommendationRow.created_at.desc())
+        .limit(limit)
+    )
+    return list(session.scalars(stmt))
