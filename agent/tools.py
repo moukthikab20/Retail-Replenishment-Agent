@@ -208,6 +208,19 @@ def get_open_orders(
         raise
 
 
+def _forecast_payload(store_id: str, sku: str, forecast_days: int) -> dict[str, Any]:
+    _validate_store_sku(store_id, sku)
+    if forecast_days < 1:
+        raise AppError("forecast_days must be >= 1", code="domain_error")
+    forecast = _domain_call(
+        forecast_service.get_demand_forecast,
+        store_id,
+        sku,
+        horizon_days=forecast_days,
+    )
+    return sanitize_public_dict(forecast.model_dump(mode="json"))
+
+
 @function_tool
 def get_demand_forecast(
     wrapper: RunContextWrapper[ReplenishmentRunContext],
@@ -217,16 +230,7 @@ def get_demand_forecast(
 ) -> dict[str, Any]:
     """Call to obtain the deterministic demand forecast for the given horizon."""
     try:
-        _validate_store_sku(store_id, sku)
-        if forecast_days < 1:
-            raise AppError("forecast_days must be >= 1", code="domain_error")
-        forecast = _domain_call(
-            forecast_service.get_demand_forecast,
-            store_id,
-            sku,
-            horizon_days=forecast_days,
-        )
-        result = sanitize_public_dict(forecast.model_dump(mode="json"))
+        result = _forecast_payload(store_id, sku, forecast_days)
         _log_tool(
             "get_demand_forecast",
             {"store_id": store_id, "sku": sku, "forecast_days": forecast_days},
@@ -237,6 +241,34 @@ def get_demand_forecast(
     except AppError as exc:
         _log_tool(
             "get_demand_forecast",
+            {"store_id": store_id, "sku": sku, "forecast_days": forecast_days},
+            {"error": exc.code},
+            wrapper=wrapper,
+            status="error",
+        )
+        raise
+
+
+@function_tool
+def get_forecast(
+    wrapper: RunContextWrapper[ReplenishmentRunContext],
+    store_id: str,
+    sku: str,
+    forecast_days: int = 7,
+) -> dict[str, Any]:
+    """Read-oriented alias for the deterministic forecast service (same math as get_demand_forecast)."""
+    try:
+        result = _forecast_payload(store_id, sku, forecast_days)
+        _log_tool(
+            "get_forecast",
+            {"store_id": store_id, "sku": sku, "forecast_days": forecast_days},
+            result,
+            wrapper=wrapper,
+        )
+        return result
+    except AppError as exc:
+        _log_tool(
+            "get_forecast",
             {"store_id": store_id, "sku": sku, "forecast_days": forecast_days},
             {"error": exc.code},
             wrapper=wrapper,
@@ -487,6 +519,114 @@ def get_recommendation_history(
 
 
 @function_tool
+def get_policy_evaluation(
+    wrapper: RunContextWrapper[ReplenishmentRunContext],
+    recommendation_id: str,
+) -> dict[str, Any]:
+    """
+    Read the persisted policy/guardrail evaluation for a recommendation.
+
+    Returns the frozen evaluation captured at scoring time — does not re-score
+    or rewrite historical decisions.
+    """
+    try:
+        rec = sanitize_public_dict(
+            _domain_call(recommendation_service.get_recommendation, recommendation_id)
+        )
+        evaluation = rec.get("policy_evaluation") or {}
+        result = sanitize_public_dict(
+            {
+                "status": "ok",
+                "recommendation_id": recommendation_id,
+                "store_id": rec.get("store_id"),
+                "sku": rec.get("sku"),
+                "disposition": rec.get("disposition") or evaluation.get("disposition"),
+                "policy_version": rec.get("policy_version")
+                or evaluation.get("policy_version"),
+                "policy_id": evaluation.get("policy_id"),
+                "failed_rules": evaluation.get("failed_rules") or [],
+                "warnings": evaluation.get("warnings") or [],
+                "evaluated_rules": evaluation.get("evaluated_rules") or [],
+                "order_value": evaluation.get("order_value"),
+                "confidence": evaluation.get("confidence"),
+                "recommendation_status": rec.get("status")
+                or evaluation.get("recommendation_status"),
+                "source": "persisted_recommendation",
+            }
+        )
+        _log_tool(
+            "get_policy_evaluation",
+            {"recommendation_id": recommendation_id},
+            result,
+            wrapper=wrapper,
+        )
+        return result
+    except AppError as exc:
+        _log_tool(
+            "get_policy_evaluation",
+            {"recommendation_id": recommendation_id},
+            {"error": exc.code},
+            wrapper=wrapper,
+            status="error",
+        )
+        raise
+
+
+@function_tool
+def get_order_terms(
+    wrapper: RunContextWrapper[ReplenishmentRunContext],
+    store_id: str,
+    sku: str,
+) -> dict[str, Any]:
+    """
+    Read verified order constraints for a store/SKU (case pack, MOQ, max, cost).
+
+    Does not invent supplier lead times or commercial terms that are not stored.
+    """
+    try:
+        _validate_store_sku(store_id, sku)
+        product = _domain_call(product_service.get_product_details, sku)
+        open_orders = _domain_call(inventory_service.get_open_orders, store_id, sku)
+        result = sanitize_public_dict(
+            {
+                "status": "ok",
+                "store_id": store_id,
+                "sku": sku,
+                "product_name": product.product_name,
+                "case_pack": product.case_pack,
+                "minimum_order_quantity": product.minimum_order_quantity,
+                "maximum_order_quantity": product.maximum_order_quantity,
+                "unit_cost": product.unit_cost,
+                "safety_stock_units": product.safety_stock_units,
+                "open_order_quantity": open_orders.get("open_order_quantity"),
+                "supplier_lead_time_days": None,
+                "lead_time_known": False,
+                "source": "product_master_and_inventory",
+                "notes": (
+                    "Supplier lead time is not present in demo master data; "
+                    "do not invent a lead-time value."
+                ),
+            }
+        )
+        _log_tool(
+            "get_order_terms",
+            {"store_id": store_id, "sku": sku},
+            result,
+            wrapper=wrapper,
+        )
+        return result
+    except AppError as exc:
+        _log_tool(
+            "get_order_terms",
+            {"store_id": store_id, "sku": sku},
+            {"error": exc.code},
+            wrapper=wrapper,
+            status="error",
+        )
+        raise
+
+
+@function_tool
 def get_human_review_status(
     wrapper: RunContextWrapper[ReplenishmentRunContext],
     review_id: str,
@@ -717,11 +857,14 @@ def evaluate_delay_scenario(
 # Follow-up tools: read-only lookups + hypothetical scenarios (no mutations).
 FOLLOW_UP_TOOLS = [
     get_recommendation,
-    get_product_details,
     get_inventory_position,
-    get_open_orders,
+    get_forecast,
     get_demand_forecast,
+    get_policy_evaluation,
+    get_order_terms,
     get_recommendation_history,
+    get_product_details,
+    get_open_orders,
     evaluate_quantity_scenario,
     evaluate_delay_scenario,
 ]
@@ -731,10 +874,13 @@ ALL_TOOLS = [
     get_inventory_position,
     get_open_orders,
     get_demand_forecast,
+    get_forecast,
     calculate_replenishment,
     assess_replenishment_risk,
     create_recommendation_record,
     get_recommendation,
+    get_policy_evaluation,
+    get_order_terms,
     get_recommendation_history,
     evaluate_quantity_scenario,
     evaluate_delay_scenario,
@@ -750,10 +896,13 @@ ANALYSIS_TOOLS = [
     get_inventory_position,
     get_open_orders,
     get_demand_forecast,
+    get_forecast,
     calculate_replenishment,
     assess_replenishment_risk,
     create_recommendation_record,
     get_recommendation,
+    get_policy_evaluation,
+    get_order_terms,
     get_recommendation_history,
     evaluate_quantity_scenario,
     evaluate_delay_scenario,

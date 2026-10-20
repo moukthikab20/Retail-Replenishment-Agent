@@ -11,8 +11,11 @@ from agent.orchestrator import build_follow_up_agent
 from agent.tools import (
     FOLLOW_UP_TOOLS,
     get_demand_forecast,
+    get_forecast,
     get_inventory_position,
     get_open_orders,
+    get_order_terms,
+    get_policy_evaluation,
     get_product_details,
     get_recommendation,
     get_recommendation_history,
@@ -23,11 +26,14 @@ from services import recommendation_service
 
 FOLLOW_UP_TOOL_NAMES = {
     "get_recommendation",
-    "get_product_details",
     "get_inventory_position",
-    "get_open_orders",
+    "get_forecast",
     "get_demand_forecast",
+    "get_policy_evaluation",
+    "get_order_terms",
     "get_recommendation_history",
+    "get_product_details",
+    "get_open_orders",
     "evaluate_quantity_scenario",
     "evaluate_delay_scenario",
 }
@@ -54,10 +60,21 @@ def _invoke(tool: Any, payload: dict[str, Any]) -> Any:
     return asyncio.run(_run())
 
 
-def test_follow_up_tools_are_exactly_the_six_read_only_tools():
+def test_follow_up_tools_are_read_only_orchestration_surface():
     names = {t.name for t in FOLLOW_UP_TOOLS}
     assert names == FOLLOW_UP_TOOL_NAMES
     assert names.isdisjoint(MUTATING_TOOL_NAMES)
+    for required in (
+        "get_recommendation",
+        "get_inventory_position",
+        "get_forecast",
+        "get_policy_evaluation",
+        "get_order_terms",
+        "get_recommendation_history",
+        "evaluate_quantity_scenario",
+        "evaluate_delay_scenario",
+    ):
+        assert required in names
     for tool in FOLLOW_UP_TOOLS:
         assert tool.needs_approval is False
 
@@ -204,3 +221,39 @@ def test_unknown_store_is_controlled_domain_error():
     )
     text = str(result).lower()
     assert "unknown store" in text or "error" in text
+
+
+def test_get_forecast_matches_demand_forecast_tool():
+    a = _invoke(get_forecast, {"store_id": "ST001", "sku": "SKU-1001", "forecast_days": 7})
+    b = _invoke(
+        get_demand_forecast,
+        {"store_id": "ST001", "sku": "SKU-1001", "forecast_days": 7},
+    )
+    assert a["forecast_units"] == b["forecast_units"]
+    assert a["store_id"] == "ST001"
+
+
+def test_get_policy_evaluation_returns_persisted_eval():
+    from services import batch_run_service, policy_service
+
+    policy_service.ensure_default_policy()
+    run = batch_run_service.run_replenishment_batch(
+        [("ST001", "SKU-1002")],
+        trigger_type="manual",
+        initiated_by="tester",
+    )
+    rec_id = next(i["recommendation_id"] for i in run["items"] if i.get("recommendation_id"))
+    result = _invoke(get_policy_evaluation, {"recommendation_id": rec_id})
+    assert result["status"] == "ok"
+    assert result["recommendation_id"] == rec_id
+    assert result["source"] == "persisted_recommendation"
+    assert "disposition" in result
+    assert "failed_rules" in result
+
+
+def test_get_order_terms_does_not_invent_lead_time():
+    result = _invoke(get_order_terms, {"store_id": "ST001", "sku": "SKU-1001"})
+    assert result["status"] == "ok"
+    assert result["case_pack"] >= 1
+    assert result["lead_time_known"] is False
+    assert result["supplier_lead_time_days"] is None

@@ -1,7 +1,8 @@
-"""Compact Analysis-page follow-up Q&A section (Infolob styling)."""
+"""Compact Recommendation Detail follow-up Q&A (orchestration / explanation only)."""
 
 from __future__ import annotations
 
+from html import escape
 from typing import Any
 
 import streamlit as st
@@ -11,13 +12,14 @@ from services.errors import user_facing_error
 
 def example_follow_up_prompts(agent_recommended_quantity: int | None) -> list[str]:
     """Business-readable example questions for the follow-up input."""
-    qty = int(agent_recommended_quantity) if agent_recommended_quantity is not None else 72
-    lower = max(qty - 12, 0)
+    qty = int(agent_recommended_quantity) if agent_recommended_quantity is not None else 96
+    alt = 72 if qty != 72 else max(qty - 24, 0)
     return [
-        f"Why is the recommendation {qty} units?",
-        f"What happens if I order {lower} units?",
-        "What if the incoming shipment is delayed by two days?",
-        "Which factors contributed most to the risk?",
+        "Why was this held?",
+        "Which guardrail failed?",
+        f"Why {qty} units?",
+        f"What happens if I order {alt}?",
+        "What happens if the supplier is 2 days late?",
     ]
 
 
@@ -44,6 +46,25 @@ def _scenario_summary(follow_up: dict[str, Any]) -> str | None:
     return answer or None
 
 
+def _render_verified_citations(facts: list[Any]) -> None:
+    """Visually cite verified internal values (not raw JSON)."""
+    if not facts:
+        return
+    chips: list[str] = []
+    for fact in facts:
+        text = str(fact).strip()
+        if not text:
+            continue
+        chips.append(f'<span class="il-fact-chip">{escape(text)}</span>')
+    if not chips:
+        return
+    st.markdown(
+        '<p class="il-meta-line"><strong>Verified internal values</strong></p>'
+        f'<div class="il-fact-chips">{"".join(chips)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def render_follow_up_section(
     *,
     recommendation_id: str,
@@ -55,15 +76,16 @@ def render_follow_up_section(
 ) -> None:
     """
     Compact follow-up section. Requires an existing recommendation_id.
-    No approval or purchase-order action buttons.
+    No approval or purchase-order action buttons — chat is not the workflow.
     """
     if not recommendation_id:
         return
 
     with st.expander("Ask about this recommendation", expanded=False):
         st.caption(
-            "Answers use the saved recommendation. Hypothetical quantity or delay "
-            "scenarios are labeled and do not change the stored recommendation."
+            "The agent explains using verified tools and can run hypothetical "
+            "scenarios. It cannot change quantities, approve orders, or create "
+            "purchase orders from chat."
         )
 
         examples = example_follow_up_prompts(agent_recommended_quantity)
@@ -73,7 +95,7 @@ def render_follow_up_section(
         )
         for example in examples:
             st.markdown(
-                f'<p class="secondary-text">• {example}</p>',
+                f'<p class="secondary-text">• {escape(example)}</p>',
                 unsafe_allow_html=True,
             )
 
@@ -115,7 +137,6 @@ def render_follow_up_section(
             else:
                 st.session_state.pop("follow_up_answer", None)
                 st.session_state.pop("follow_up_question", None)
-                # Recommendation and analysis decision must remain.
                 st.caption("Conversation cleared. The recommendation was not changed.")
                 st.rerun()
 
@@ -150,21 +171,11 @@ def render_follow_up_section(
             )
         else:
             st.markdown(
-                f'<p class="agent-explanation">{follow_up.get("answer", "")}</p>',
+                f'<p class="agent-explanation">{escape(str(follow_up.get("answer", "")))}</p>',
                 unsafe_allow_html=True,
             )
 
-        facts = follow_up.get("verified_facts") or []
-        if facts:
-            st.markdown(
-                '<p class="il-meta-line"><strong>Verified facts</strong></p>',
-                unsafe_allow_html=True,
-            )
-            for fact in facts:
-                st.markdown(
-                    f'<p class="secondary-text">• {fact}</p>',
-                    unsafe_allow_html=True,
-                )
+        _render_verified_citations(list(follow_up.get("verified_facts") or []))
 
         assumptions = follow_up.get("assumptions") or []
         if assumptions:
@@ -174,7 +185,7 @@ def render_follow_up_section(
             )
             for item in assumptions:
                 st.markdown(
-                    f'<p class="secondary-text">• {item}</p>',
+                    f'<p class="secondary-text">• {escape(str(item))}</p>',
                     unsafe_allow_html=True,
                 )
 
@@ -186,7 +197,7 @@ def render_follow_up_section(
             )
             for item in unresolved:
                 st.markdown(
-                    f'<p class="secondary-text">• {item}</p>',
+                    f'<p class="secondary-text">• {escape(str(item))}</p>',
                     unsafe_allow_html=True,
                 )
 
@@ -197,7 +208,7 @@ def render_follow_up_section(
                 unsafe_allow_html=True,
             )
             st.markdown(
-                f'<p class="secondary-text">{scenario_summary}</p>',
+                f'<p class="secondary-text">{escape(scenario_summary)}</p>',
                 unsafe_allow_html=True,
             )
 
@@ -222,7 +233,6 @@ def render_follow_up_section(
                         or follow_up.get("conversation_id")
                     )
                 )
-            # Raw JSON stays optional and collapsed — not shown by default.
             if st.checkbox(
                 "Show raw response JSON",
                 value=False,

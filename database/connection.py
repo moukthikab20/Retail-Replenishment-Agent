@@ -16,6 +16,7 @@ from database.models import Base
 _engine: Engine | None = None
 _SessionLocal: sessionmaker[Session] | None = None
 _bound_url: str | None = None
+_schema_initialized: bool = False
 
 
 def normalize_database_url(url: str) -> str:
@@ -86,8 +87,13 @@ def get_engine(database_url: str | None = None) -> Engine:
 
 def init_db(database_url: str | None = None) -> None:
     """Create all tables if they do not exist (idempotent; used by tests/local)."""
+    global _schema_initialized
+    if _schema_initialized and database_url is None:
+        return
     engine = get_engine(database_url)
     Base.metadata.create_all(bind=engine)
+    if database_url is None:
+        _schema_initialized = True
 
 
 @contextmanager
@@ -107,12 +113,13 @@ def get_session(database_url: str | None = None) -> Generator[Session, None, Non
 
 def reset_engine() -> None:
     """Test helper to clear the cached engine."""
-    global _engine, _SessionLocal, _bound_url
+    global _engine, _SessionLocal, _bound_url, _schema_initialized
     if _engine is not None:
         _engine.dispose()
     _engine = None
     _SessionLocal = None
     _bound_url = None
+    _schema_initialized = False
 
 
 def database_healthcheck(database_url: str | None = None) -> dict[str, str | bool]:

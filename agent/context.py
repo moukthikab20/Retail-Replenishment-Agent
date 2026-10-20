@@ -22,7 +22,17 @@ class ReplenishmentRunContext:
     actor_role: str | None = None
     recommendation_id: str | None = None
     tools_used: list[str] = field(default_factory=list)
+    # Durable execution journal keys (additive).
+    execution_id: str | None = None
+    correlation_id: str | None = None
+    approval_id: str | None = None
+    execution_type: str | None = None
 
     def note_tool(self, name: str) -> None:
         if name not in self.tools_used:
             self.tools_used.append(name)
+
+    @property
+    def journal_execution_id(self) -> str:
+        """Authoritative key for the persistent execution journal."""
+        return self.execution_id or self.run_id

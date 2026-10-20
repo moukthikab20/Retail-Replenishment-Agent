@@ -20,6 +20,11 @@ def save_human_review(session: Session, review: HumanReplenishmentReview) -> Hum
         human_proposed_quantity=review.human_proposed_quantity,
         override_used=review.override_used,
         override_reason=review.override_reason,
+        reason_code=review.reason_code,
+        comments=review.comments,
+        decision_action=review.decision_action,
+        quantity_source=review.quantity_source or "agent",
+        ai_recommendation_unavailable=bool(review.ai_recommendation_unavailable),
         difference_units=review.difference_units,
         difference_percent=float(review.difference_percent),
         projected_days_of_supply=(
@@ -79,6 +84,13 @@ def _to_model(row: HumanReviewRow) -> HumanReplenishmentReview:
         human_proposed_quantity=row.human_proposed_quantity,
         override_used=row.override_used,
         override_reason=row.override_reason,
+        reason_code=getattr(row, "reason_code", None),
+        comments=getattr(row, "comments", None),
+        decision_action=getattr(row, "decision_action", None),
+        quantity_source=getattr(row, "quantity_source", None) or "agent",
+        ai_recommendation_unavailable=bool(
+            getattr(row, "ai_recommendation_unavailable", False)
+        ),
         difference_units=row.difference_units,
         difference_percent=Decimal(str(row.difference_percent)),
         projected_days_of_supply=(

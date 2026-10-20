@@ -13,7 +13,7 @@ from agent.instructions import (
 )
 from agent.follow_up_guardrails import FOLLOW_UP_INPUT_GUARDRAILS
 from agent.schemas import FollowUpAnswer, ReplenishmentAgentDecision
-from agent.tools import ALL_TOOLS, FOLLOW_UP_TOOLS
+from agent.tools import ALL_TOOLS, ANALYSIS_TOOLS, FOLLOW_UP_TOOLS, ORDER_TOOLS
 from config import AGENT_MAX_TURNS, FOLLOW_UP_MAX_TURNS, OPENAI_MODEL
 
 
@@ -26,20 +26,25 @@ def build_replenishment_agent(
     input_guardrails: list | None = None,
 ) -> Agent:
     """
-    Build the one Retail Replenishment Agent.
+    Build the one Retail Replenishment Agent (orchestrator).
 
-    Model and turn limits come from environment-backed config unless a test
-    explicitly overrides the model argument. Follow-up runs reuse this agent
-    with FollowUpAnswer output, FOLLOW_UP_TOOLS, and FOLLOW_UP_INSTRUCTIONS.
+    Default tool surface is ANALYSIS_TOOLS — deterministic math stays in services.
+    Order/HITL flows pass ORDER_TOOLS or ALL_TOOLS explicitly. Follow-up uses
+    FOLLOW_UP_TOOLS via build_follow_up_agent().
     """
     return Agent(
         name=AGENT_NAME,
         instructions=instructions if instructions is not None else AGENT_INSTRUCTIONS,
-        tools=tools if tools is not None else ALL_TOOLS,
+        tools=tools if tools is not None else ANALYSIS_TOOLS,
         output_type=output_type or ReplenishmentAgentDecision,
         model=model or OPENAI_MODEL,
         input_guardrails=input_guardrails or [],
     )
+
+
+def build_order_agent(model: str | None = None) -> Agent:
+    """Same agent configured with order/HITL tools only."""
+    return build_replenishment_agent(model=model, tools=ORDER_TOOLS)
 
 
 def build_follow_up_agent(model: str | None = None) -> Agent:

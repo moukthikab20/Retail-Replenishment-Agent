@@ -54,6 +54,19 @@ def get_latest_approval_for_review(session: Session, review_id: str) -> Approval
     return _to_model(row) if row else None
 
 
+def get_latest_approval_for_recommendation(
+    session: Session, recommendation_id: str
+) -> ApprovalRequest | None:
+    stmt = (
+        select(ApprovalRow)
+        .where(ApprovalRow.recommendation_id == recommendation_id)
+        .order_by(ApprovalRow.requested_at.desc())
+        .limit(1)
+    )
+    row = session.scalars(stmt).first()
+    return _to_model(row) if row else None
+
+
 def _to_model(row: ApprovalRow) -> ApprovalRequest:
     return ApprovalRequest(
         approval_id=row.approval_id,

@@ -1,6 +1,38 @@
-sku,product_name,case_pack_size,safety_stock_units
-SKU-1001,Organic Whole Milk 1G,12,24
-SKU-1002,Sparkling Water 12pk,6,18
-SKU-1003,Granola Bars 6pk,8,16
-SKU-1004,Greek Yogurt 4pk,10,20
-SKU-1005,Paper Towels 8-roll,4,12
+sku,product_name,category,vendor_id,vendor_name,case_pack_size,safety_stock_units,unit_cost,retail_price,minimum_order_quantity,maximum_order_quantity
+SKU-1001,Organic Whole Milk 1G,Dairy,V001,Maple Grove Dairy,12,24,3.49,4.82,12,480
+SKU-1002,Sparkling Water 12pk,Beverages,V002,Metro Goods Distribution,6,18,4.25,6.4,6,240
+SKU-1003,Granola Bars 6pk,Snacks,V003,NorthStar Distribution,8,16,3.99,5.84,8,320
+SKU-1004,Greek Yogurt 4pk,Dairy,V001,Maple Grove Dairy,10,20,4.79,7.07,10,400
+SKU-1005,Paper Towels 8-roll,Household,V004,Summit Wholesale,4,12,8.99,12.47,4,240
+SKU-1006,Cheddar Cheese,Dairy,V001,Maple Grove Dairy,8,14,5.49,8.18,8,320
+SKU-1007,Salted Butter,Dairy,V001,Maple Grove Dairy,12,16,4.29,6.1,12,480
+SKU-1008,Almond Milk,Dairy,V008,FreshFields Foods,6,12,3.79,5.7,6,240
+SKU-1009,Eggs 12-pack,Dairy,V001,Maple Grove Dairy,12,24,3.29,4.72,12,480
+SKU-1010,Orange Juice,Beverages,V002,Metro Goods Distribution,6,14,3.99,6.23,6,240
+SKU-1011,Apple Juice,Beverages,V002,Metro Goods Distribution,6,12,3.49,5.2,6,240
+SKU-1012,Cola 12-pack,Beverages,V002,Metro Goods Distribution,6,18,5.99,8.51,6,240
+SKU-1013,Bottled Water 24-pack,Beverages,V008,FreshFields Foods,4,20,4.99,7.51,4,240
+SKU-1014,Energy Drink,Beverages,V002,Metro Goods Distribution,12,24,2.49,3.57,12,480
+SKU-1015,Iced Tea,Beverages,V002,Metro Goods Distribution,8,12,2.99,4.54,8,320
+SKU-1016,Potato Chips,Snacks,V003,NorthStar Distribution,12,18,2.79,4.13,12,480
+SKU-1017,Tortilla Chips,Snacks,V003,NorthStar Distribution,10,14,2.99,4.68,10,400
+SKU-1018,Mixed Nuts,Snacks,V007,Harvest Foods Co.,6,8,6.49,9.69,6,240
+SKU-1019,Chocolate Cookies,Snacks,V003,NorthStar Distribution,8,12,3.29,5.2,8,320
+SKU-1020,Protein Bars,Snacks,V003,NorthStar Distribution,12,16,1.99,3.0,12,480
+SKU-1021,Popcorn,Snacks,V007,Harvest Foods Co.,12,10,2.19,3.49,12,480
+SKU-1022,Toilet Paper 12-roll,Household,V004,Summit Wholesale,4,10,11.99,17.12,4,240
+SKU-1023,Laundry Detergent,Household,V004,Summit Wholesale,4,6,9.49,12.91,4,240
+SKU-1024,Dish Soap,Household,V004,Summit Wholesale,8,10,2.89,4.17,8,320
+SKU-1025,Trash Bags,Household,V007,Harvest Foods Co.,6,8,7.49,10.29,6,240
+SKU-1026,Cleaning Spray,Household,V004,Summit Wholesale,6,6,3.99,5.81,6,240
+SKU-1027,Pasta,Pantry,V005,Prime Pantry Supply,12,16,1.49,2.13,12,480
+SKU-1028,Pasta Sauce,Pantry,V005,Prime Pantry Supply,12,14,2.29,3.46,12,480
+SKU-1029,Peanut Butter,Pantry,V005,Prime Pantry Supply,8,10,3.79,5.47,8,320
+SKU-1030,Breakfast Cereal,Pantry,V005,Prime Pantry Supply,6,12,4.29,6.55,6,240
+SKU-1031,Rice,Pantry,V007,Harvest Foods Co.,6,10,5.99,8.72,6,240
+SKU-1032,Olive Oil,Pantry,V005,Prime Pantry Supply,4,4,12.99,20.0,4,240
+SKU-1033,Shampoo,Personal Care,V006,GreenLeaf Foods,6,8,6.49,10.09,6,240
+SKU-1034,Body Wash,Personal Care,V006,GreenLeaf Foods,6,8,5.99,8.87,6,240
+SKU-1035,Toothpaste,Personal Care,V008,FreshFields Foods,12,12,3.49,5.48,12,480
+SKU-1036,Hand Soap,Personal Care,V006,GreenLeaf Foods,8,10,2.79,4.17,8,320
+SKU-1037,Deodorant,Personal Care,V006,GreenLeaf Foods,12,10,4.99,7.9,12,480

@@ -97,3 +97,17 @@ def test_maximum_quantity():
     )
     assert result.recommended_quantity == 50
     assert "maximum_order_quantity" in result.constraints_applied
+
+
+def test_shelf_capacity_restriction():
+    result = calculate_replenishment(
+        store_id="ST001",
+        sku="SKU-1",
+        forecast_units=Decimal("100"),
+        inventory=_inv(on_hand=10, reserved=0, in_transit=2, safety_stock=12),
+        product=_product(case_pack=6, shelf_capacity=30),
+    )
+    # Without shelf: raw=100+12-10-2=100 → case pack 102.
+    # Room on shelf: 30 - 10 - 2 = 18 → largest case-pack multiple = 18.
+    assert result.recommended_quantity == 18
+    assert "shelf_capacity" in result.constraints_applied

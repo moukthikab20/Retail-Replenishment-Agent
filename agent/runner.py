@@ -39,6 +39,7 @@ from agent.orchestrator import (
     build_replenishment_agent,
     follow_up_max_turns,
 )
+from agent.tools import ALL_TOOLS
 from agent.schemas import (
     FollowUpAnswer,
     FollowUpQuestionType,
@@ -116,6 +117,10 @@ def _make_context(
     actor: str = "agent",
     actor_role: str | None = None,
     recommendation_id: str | None = None,
+    execution_id: str | None = None,
+    correlation_id: str | None = None,
+    approval_id: str | None = None,
+    execution_type: str | None = None,
 ) -> ReplenishmentRunContext:
     return ReplenishmentRunContext(
         run_id=run_id,
@@ -125,6 +130,10 @@ def _make_context(
         actor=actor,
         actor_role=actor_role,
         recommendation_id=recommendation_id,
+        execution_id=execution_id or run_id,
+        correlation_id=correlation_id,
+        approval_id=approval_id,
+        execution_type=execution_type,
     )
 
 
@@ -152,18 +161,24 @@ def _execute_runner(
     max_turns: int | None = None,
     run_config: RunConfig | None = None,
     session: Any | None = None,
+    hooks: Any | None = None,
 ) -> Any:
     """
     Run the agent without calling Runner.run_sync inside an active event loop.
 
     Streamlit / async hosts may already own a loop; in that case we execute
     Runner.run in a worker thread with its own event loop.
+    Passes ExecutionJournalHooks by default for durable tool journaling.
     """
+    from agent.execution_hooks import ExecutionJournalHooks
+
     turns = max_turns if max_turns is not None else analysis_max_turns()
+    journal_hooks = hooks if hooks is not None else ExecutionJournalHooks()
     kwargs: dict[str, Any] = {
         "context": context,
         "max_turns": turns,
         "run_config": run_config,
+        "hooks": journal_hooks,
     }
     if session is not None:
         kwargs["session"] = session
@@ -174,14 +189,59 @@ def _execute_runner(
     except RuntimeError:
         in_running_loop = False
 
-    if in_running_loop:
-        def _in_thread() -> Any:
-            return asyncio.run(Runner.run(agent, input_payload, **kwargs))
+    try:
+        if in_running_loop:
+            def _in_thread() -> Any:
+                return asyncio.run(Runner.run(agent, input_payload, **kwargs))
 
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(_in_thread).result()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(_in_thread).result()
 
-    return Runner.run_sync(agent, input_payload, **kwargs)
+        return Runner.run_sync(agent, input_payload, **kwargs)
+    except Exception as exc:
+        # Secondary failure path: reconcile unfinished tools + journal if possible.
+        if context is not None:
+            try:
+                from agent.execution_engine import (
+                    fail_execution,
+                    get_execution,
+                    reconcile_unfinished_tools,
+                )
+                from agent.execution_failures import classify_failure
+
+                eid = context.journal_execution_id
+                reconcile_unfinished_tools(eid, actor=context.actor or "agent")
+                # Optionally journal the last open tool via hooks helper.
+                if hasattr(journal_hooks, "journal_tool_failure"):
+                    open_id = None
+                    if getattr(journal_hooks, "_tool_started_at", None):
+                        open_id = next(reversed(journal_hooks._tool_started_at), None)
+                    if open_id:
+                        journal_hooks.journal_tool_failure(
+                            execution_id=eid,
+                            tool_name="unknown_tool",
+                            tool_call_id=open_id,
+                            exc=exc,
+                            actor=context.actor or "agent",
+                        )
+                current = get_execution(eid)
+                if current and current["status"] in {
+                    "running",
+                    "waiting_for_tool",
+                    "planning",
+                    "created",
+                    "retry_pending",
+                }:
+                    fail_execution(
+                        eid,
+                        expected_version=current["version"],
+                        error=classify_failure(exc=exc, source="runner"),
+                        actor=context.actor or "agent",
+                        actor_role=context.actor_role,
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception("runner failure reconciliation failed")
+        raise
 
 
 def analyze_replenishment(
@@ -200,13 +260,127 @@ def analyze_replenishment(
     same deterministic service pipeline and returns a structured decision.
     Authoritative recommendation rows are persisted in the database.
     """
+    from services import auth_service
+
+    if actor_role is not None:
+        auth_service.authorize_run_analysis(actor_role)
+
     init_db()
     _configure_tracing()
     run_id = f"RUN-{uuid4().hex[:12]}"
 
+    from agent.execution_engine import (
+        create_execution,
+        start_execution,
+        try_complete_execution,
+    )
+    from agent.execution_states import ExecutionType
+
+    execution = create_execution(
+        execution_type=ExecutionType.RECOMMENDATION_ANALYSIS,
+        goal=f"Analyze replenishment for {store_id}/{sku}",
+        user_id=user_id,
+        session_id=session_id,
+        actor=actor,
+        actor_role=actor_role,
+        execution_id=run_id,
+        context={"store_id": store_id, "sku": sku, "mode": "pending"},
+    )
+    correlation_id = execution.get("correlation_id")
+    try:
+        start_execution(
+            run_id,
+            expected_version=execution["version"],
+            actor=actor,
+            actor_role=actor_role,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("analysis execution start failed")
+
+    # Agent Runtime invokes Planning Engine before LLM execution.
+    try:
+        from planner.contracts import Plan
+        from planner.factory import get_planner
+        from planner.service import run_plan_until_blocked
+        from agent.execution_engine import merge_execution_context_fields, get_execution
+
+        current = get_execution(run_id) or {}
+        ctx = dict((current.get("context") or {}))
+        snapshot = ctx.get("plan_snapshot")
+        if snapshot:
+            plan_obj = Plan.model_validate(snapshot)
+            try:
+                from workflow.service import run_workflow_for_execution
+
+                ex_row = get_execution(run_id) or {}
+                envelope = ex_row.get("envelope") or {}
+                ctx = dict(envelope.get("context") or {})
+                wf_result, ctx = run_workflow_for_execution(
+                    execution_id=run_id,
+                    plan=plan_obj,
+                    goal=f"Analyze replenishment for {store_id}/{sku}",
+                    workflow_type="recommendation_analysis",
+                    context=ctx,
+                    store_id=store_id,
+                    sku=sku,
+                    business_context={"store_id": store_id, "sku": sku},
+                )
+                plan_obj = Plan.model_validate(ctx.get("plan_snapshot") or plan_obj.model_dump())
+                planner = get_planner()
+                llm_ops = {}
+                decision_ops = ctx.get("decision_ops") or {}
+                for step in plan_obj.steps:
+                    if str(step.type) == "llm" and step.output.get("llm_ops"):
+                        llm_ops = step.output["llm_ops"]
+                    if str(step.type) == "decision" and step.output.get("decision_ops"):
+                        decision_ops = step.output["decision_ops"]
+                merge_execution_context_fields(
+                    run_id,
+                    {
+                        "plan_ops": planner.ops_bundle(plan_obj),
+                        "plan_snapshot": plan_obj.model_dump(mode="json"),
+                        "task_graph": planner.ops_bundle(plan_obj).get("task_graph"),
+                        "workflow_ops": (wf_result.workflow.to_ops_summary()
+                                         if wf_result else ctx.get("workflow_ops")),
+                        **({"llm_ops": llm_ops} if llm_ops else {}),
+                        **({"decision_ops": decision_ops} if decision_ops else {}),
+                    },
+                )
+            except Exception:
+                # Fail-soft fallback to direct planner execution.
+                plan_obj = run_plan_until_blocked(
+                    plan_obj,
+                    goal=f"Analyze replenishment for {store_id}/{sku}",
+                    workflow=f"recommendation_analysis",
+                    execution_id=run_id,
+                    store_id=store_id,
+                    sku=sku,
+                    business_context={"store_id": store_id, "sku": sku},
+                )
+                planner = get_planner()
+                llm_ops = {}
+                decision_ops = {}
+                for step in plan_obj.steps:
+                    if str(step.type) == "llm" and step.output.get("llm_ops"):
+                        llm_ops = step.output["llm_ops"]
+                    if str(step.type) == "decision" and step.output.get("decision_ops"):
+                        decision_ops = step.output["decision_ops"]
+                merge_execution_context_fields(
+                    run_id,
+                    {
+                        "plan_ops": planner.ops_bundle(plan_obj),
+                        "plan_snapshot": plan_obj.model_dump(mode="json"),
+                        "task_graph": planner.ops_bundle(plan_obj).get("task_graph"),
+                        **({"llm_ops": llm_ops} if llm_ops else {}),
+                        **({"decision_ops": decision_ops} if decision_ops else {}),
+                    },
+                )
+    except Exception:  # noqa: BLE001
+        logger.exception("planning engine invoke failed (fail-soft)")
+
     if not OPENAI_API_KEY:
         try:
-            return _deterministic_analysis(
+            payload = _deterministic_analysis(
                 store_id,
                 sku,
                 run_id,
@@ -214,7 +388,40 @@ def analyze_replenishment(
                 session_id=session_id,
                 actor=actor,
             )
+            try_complete_execution(
+                run_id,
+                result={"mode": "deterministic_fallback", **(payload if isinstance(payload, dict) else {})},
+                actor=actor,
+            )
+            if isinstance(payload, dict):
+                payload["execution_id"] = run_id
+                payload["execution_mode"] = "deterministic_fallback"
+            return payload
         except (AppError, ValueError) as exc:
+            try:
+                from agent.execution_engine import fail_execution, get_execution
+                from agent.execution_failures import classify_failure
+
+                current = get_execution(run_id)
+                if current and current["status"] not in {
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "rejected",
+                }:
+                    fail_execution(
+                        run_id,
+                        expected_version=current["version"],
+                        error=classify_failure(
+                            code=getattr(exc, "code", None),
+                            exc=exc,
+                            source="deterministic_fallback",
+                        ),
+                        actor=actor,
+                        actor_role=actor_role,
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception("deterministic analysis fail_execution failed")
             return _analysis_domain_error(
                 run_id=run_id,
                 store_id=store_id,
@@ -236,12 +443,17 @@ def analyze_replenishment(
         conversation_id=session_id,
         actor=actor,
         actor_role=actor_role,
+        execution_id=run_id,
+        correlation_id=correlation_id,
+        execution_type=ExecutionType.RECOMMENDATION_ANALYSIS.value,
     )
     run_config = _build_run_config(
         workflow_name=WORKFLOW_ANALYSIS,
         group_id=session_id or user_id or run_id,
         trace_metadata={
             "run_id": run_id,
+            "execution_id": run_id,
+            "correlation_id": correlation_id,
             "store_id": store_id,
             "sku": sku,
             "user_id": user_id,
@@ -272,11 +484,12 @@ def analyze_replenishment(
         return {
             "status": "paused",
             "run_id": run_id,
+            "execution_id": run_id,
             "interruptions": [str(i) for i in result.interruptions],
             "message": "Agent paused for tool approval unexpectedly during analysis.",
         }
 
-    return _coerce_analysis_output(
+    payload = _coerce_analysis_output(
         result.final_output,
         run_id=run_id,
         store_id=store_id,
@@ -285,6 +498,15 @@ def analyze_replenishment(
         session_id=session_id,
         actor=actor,
     )
+    try_complete_execution(
+        run_id,
+        result={"mode": "sdk", **(payload if isinstance(payload, dict) else {})},
+        actor=actor,
+    )
+    if isinstance(payload, dict):
+        payload["execution_id"] = run_id
+        payload["execution_mode"] = "sdk"
+    return payload
 
 
 # Backward-compatible alias used by older pages/tests.
@@ -361,6 +583,98 @@ def answer_follow_up(
             conversation_id=follow_up_session_key,
         )
 
+    from services import audit_service
+    from agent.execution_engine import (
+        create_execution,
+        start_execution,
+        try_complete_execution,
+    )
+    from agent.execution_states import ExecutionType
+
+    # Durable execution record — conversational outcome still returned to caller.
+    execution = create_execution(
+        execution_type=ExecutionType.FOLLOW_UP,
+        goal=f"Explain and answer follow-up for recommendation {recommendation_id}",
+        recommendation_id=recommendation_id,
+        user_id=effective_user_id,
+        session_id=session_id,
+        actor=actor or "agent",
+        actor_role=actor_role,
+        execution_id=run_id,
+        context={"question_type": inferred_question_type},
+    )
+    try:
+        start_execution(
+            run_id,
+            expected_version=execution["version"],
+            actor=actor or "agent",
+            actor_role=actor_role,
+        )
+    except Exception:  # noqa: BLE001 — follow-up must not fail solely on lifecycle bookkeeping
+        logger.exception("follow_up execution start failed")
+
+    # Planning Engine before LLM — Agent Runtime owns planning + orchestration.
+    try:
+        from planner.contracts import Plan
+        from planner.factory import get_planner
+        from planner.service import run_plan_until_blocked
+        from agent.execution_engine import merge_execution_context_fields, get_execution
+
+        current = get_execution(run_id) or {}
+        ctx = dict(current.get("context") or {})
+        snapshot = ctx.get("plan_snapshot")
+        if snapshot:
+            plan_obj = Plan.model_validate(snapshot)
+            plan_obj = run_plan_until_blocked(
+                plan_obj,
+                goal=f"Explain and answer follow-up for recommendation {recommendation_id}",
+                workflow="follow_up",
+                execution_id=run_id,
+                recommendation_id=recommendation_id,
+                store_id=str(rec.get("store_id") or "") or None,
+                sku=str(rec.get("sku") or "") or None,
+                business_context={"question_type": inferred_question_type},
+            )
+            planner = get_planner()
+            llm_ops = {}
+            decision_ops = {}
+            for step in plan_obj.steps:
+                if str(step.type) == "llm" and step.output.get("llm_ops"):
+                    llm_ops = step.output["llm_ops"]
+                if str(step.type) == "decision" and step.output.get("decision_ops"):
+                    decision_ops = step.output["decision_ops"]
+            merge_execution_context_fields(
+                run_id,
+                {
+                    "plan_ops": planner.ops_bundle(plan_obj),
+                    "plan_snapshot": plan_obj.model_dump(mode="json"),
+                    **({"llm_ops": llm_ops} if llm_ops else {}),
+                    **({"decision_ops": decision_ops} if decision_ops else {}),
+                },
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("follow_up planning engine invoke failed (fail-soft)")
+
+    audit_service.record_event(
+        audit_service.AGENT_FOLLOW_UP_QUESTION,
+        actor=actor or "agent",
+        actor_type=audit_service.ACTOR_TYPE_AGENT,
+        actor_role=actor_role,
+        run_id=run_id,
+        recommendation_id=recommendation_id,
+        store_id=str(rec.get("store_id") or "") or None,
+        sku=str(rec.get("sku") or "") or None,
+        user_id=effective_user_id,
+        session_id=session_id,
+        details={
+            "question": question[:500],
+            "user_message": question[:500],
+            "question_type": inferred_question_type,
+            "store_id": rec.get("store_id"),
+            "sku": rec.get("sku"),
+        },
+    )
+
     # Deterministic scenario routing always available (model must not invent impact).
     scenario_answer = _try_deterministic_scenario_follow_up(
         run_id=run_id,
@@ -369,15 +683,37 @@ def answer_follow_up(
         conversation_id=follow_up_session_key,
     )
     if scenario_answer is not None:
+        audit_service.record_event(
+            audit_service.SCENARIO_EVALUATED,
+            actor=actor or "agent",
+            actor_type=audit_service.ACTOR_TYPE_AGENT,
+            actor_role=actor_role,
+            run_id=run_id,
+            recommendation_id=recommendation_id,
+            store_id=str(rec.get("store_id") or "") or None,
+            sku=str(rec.get("sku") or "") or None,
+            user_id=effective_user_id,
+            session_id=session_id,
+            details={
+                "scenario_type": scenario_answer.get("scenario_type"),
+                "mode": scenario_answer.get("mode"),
+                "question": question[:500],
+                "store_id": rec.get("store_id"),
+                "sku": rec.get("sku"),
+            },
+        )
+        try_complete_execution(run_id, result={"mode": "scenario"}, actor=actor or "agent")
         return scenario_answer
 
     if not OPENAI_API_KEY:
-        return _deterministic_follow_up(
+        result = _deterministic_follow_up(
             run_id=run_id,
             recommendation=rec,
             question=question,
             conversation_id=follow_up_session_key,
         )
+        try_complete_execution(run_id, result={"mode": "deterministic"}, actor=actor or "agent")
+        return result
 
     agent = build_follow_up_agent()
     prompt = (
@@ -393,6 +729,9 @@ def answer_follow_up(
         actor=actor,
         actor_role=actor_role,
         recommendation_id=recommendation_id,
+        execution_id=run_id,
+        correlation_id=execution.get("correlation_id"),
+        execution_type=ExecutionType.FOLLOW_UP.value,
     )
     run_config = _build_run_config(
         workflow_name=WORKFLOW_FOLLOW_UP,
@@ -400,6 +739,8 @@ def answer_follow_up(
         trace_metadata={
             "workflow_name": WORKFLOW_FOLLOW_UP,
             "run_id": run_id,
+            "execution_id": run_id,
+            "correlation_id": execution.get("correlation_id"),
             "recommendation_id": recommendation_id,
             "user_id": effective_user_id,
             "session_id": session_id,
@@ -478,6 +819,7 @@ def answer_follow_up(
     payload["follow_up_session_id"] = follow_up_session_key
     payload["can_change_business_state"] = False
     payload["mode"] = "agent"
+    try_complete_execution(run_id, result={"mode": "agent"}, actor=actor or "agent")
     return payload
 
 
@@ -488,7 +830,13 @@ def get_pending_order_flow(approval_id: str) -> dict[str, Any] | None:
         existing_po = purchase_order_repository.get_purchase_order_by_approval(
             session, approval_id
         )
-        if existing_po is not None:
+        # Only treat as completed once ERP transmission has finished (or been sent).
+        # pending_erp OrderIntent/PO from formal approval must not skip tool HITL.
+        if existing_po is not None and (
+            existing_po.transmission_status == "sent"
+            or (existing_po.order_status or "")
+            in {"transmitted", "acknowledged", "in_transit", "received"}
+        ):
             latest = audit_repository.get_latest_run_by_approval(session, approval_id)
             return {
                 "status": "completed",
@@ -524,6 +872,9 @@ def resume_order_run(
     Requires formal DB approval to still be approved with an unchanged quantity.
     Duplicate resume returns the existing purchase order when already completed.
     """
+    from services import auth_service
+
+    # Server-side HITL authorization — UI checks are supplemental only.
     init_db()
     _configure_tracing()
 
@@ -561,7 +912,7 @@ def resume_order_run(
             "approval_id": approval_id,
         }
 
-    if row_status != "paused":
+    if row_status != "paused" and row_status != "waiting_for_human":
         return {
             "status": "error",
             "run_id": run_id,
@@ -569,6 +920,11 @@ def resume_order_run(
             "message": f"Agent run is not paused (status={row_status}).",
             "approval_id": approval_id,
         }
+
+    required_role = envelope.get("required_role") or (
+        (envelope.get("guards") or {}).get("required_role")
+    )
+    auth_service.authorize_hitl_resume(actor_role, required_role)
 
     if not approve:
         reject_approval_id = approval_id or (envelope.get("pending_tool_args") or {}).get(
@@ -681,6 +1037,41 @@ def start_order_agent_after_approval(
     run_id = f"RUN-{uuid4().hex[:12]}"
     idempotency_key = f"hitl-order:{approval_id}"
 
+    from agent.execution_engine import create_execution, start_execution
+    from agent.execution_states import ExecutionType
+
+    execution = create_execution(
+        execution_type=ExecutionType.ORDER_EXECUTION,
+        goal=f"Create purchase order for approval {approval_id}",
+        recommendation_id=recommendation_id,
+        approval_id=approval_id,
+        user_id=user_id,
+        session_id=session_id,
+        actor=actor,
+        actor_role=actor_role,
+        execution_id=run_id,
+        idempotency_key=idempotency_key,
+        context={"mode": "pending"},
+    )
+    # Idempotency key may return an existing paused/completed execution.
+    if execution["execution_id"] != run_id:
+        run_id = execution["execution_id"]
+    correlation_id = execution.get("correlation_id")
+    if execution["status"] in {"waiting_for_human", "paused"}:
+        pending = get_pending_order_flow(approval_id)
+        if pending is not None:
+            return pending
+    if execution["status"] == "created":
+        try:
+            start_execution(
+                run_id,
+                expected_version=execution["version"],
+                actor=actor,
+                actor_role=actor_role,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("order execution start failed")
+
     # Always pause for sensitive-tool confirmation (with or without API key).
     if not OPENAI_API_KEY:
         envelope = build_pause_envelope(
@@ -708,6 +1099,7 @@ def start_order_agent_after_approval(
         return {
             "status": "paused",
             "run_id": run_id,
+            "execution_id": run_id,
             "pending_tool": "create_mock_purchase_order",
             "pending_args": {"approval_id": approval_id},
             "state_version": envelope["version"],
@@ -718,7 +1110,7 @@ def start_order_agent_after_approval(
             ),
         }
 
-    agent = build_replenishment_agent()
+    agent = build_replenishment_agent(tools=ALL_TOOLS)
     prompt = (
         f"Formal approval {approval_id} is recorded as approved for "
         f"recommendation {recommendation_id}. "
@@ -735,12 +1127,18 @@ def start_order_agent_after_approval(
         actor=actor,
         actor_role=actor_role,
         recommendation_id=recommendation_id,
+        execution_id=run_id,
+        correlation_id=correlation_id,
+        approval_id=approval_id,
+        execution_type=ExecutionType.ORDER_EXECUTION.value,
     )
     run_config = _build_run_config(
         workflow_name=WORKFLOW_ORDER,
         group_id=session_id or run_id,
         trace_metadata={
             "run_id": run_id,
+            "execution_id": run_id,
+            "correlation_id": correlation_id,
             "approval_id": approval_id,
             "recommendation_id": recommendation_id,
             "workflow": WORKFLOW_ORDER,
@@ -780,6 +1178,7 @@ def start_order_agent_after_approval(
         args.setdefault("approval_id", approval_id)
 
         sdk_json = state.to_json() if hasattr(state, "to_json") else {"run_id": run_id}
+        sdk_tool_call_id = _extract_interruption_tool_call_id(pending_interruption)
         envelope = build_pause_envelope(
             approval_id=approval_id,
             recommendation_id=recommendation_id,
@@ -792,6 +1191,7 @@ def start_order_agent_after_approval(
             mode="sdk",
             actor=actor,
             actor_role=actor_role,
+            tool_call_id=sdk_tool_call_id,
         )
         _persist_hitl_envelope(
             run_id=run_id,
@@ -807,10 +1207,12 @@ def start_order_agent_after_approval(
         return {
             "status": "paused",
             "run_id": run_id,
+            "execution_id": run_id,
             "pending_tool": envelope["pending_tool_name"],
             "pending_args": args,
             "state_version": envelope["version"],
             "mode": "sdk",
+            "tool_call_id": envelope.get("tool_call_id"),
             "message": "Sensitive order tool requires explicit HITL approval to resume.",
         }
 
@@ -834,6 +1236,24 @@ def start_order_agent_after_approval(
     return payload
 
 
+def _extract_interruption_tool_call_id(interruption: Any) -> str | None:
+    """Best-effort SDK tool_call_id from a needs_approval interruption."""
+    for attr in ("tool_call_id", "call_id", "id"):
+        value = getattr(interruption, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    raw = getattr(interruption, "raw_item", None)
+    if isinstance(raw, dict):
+        candidate = raw.get("call_id") or raw.get("id")
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    if raw is not None:
+        candidate = getattr(raw, "call_id", None) or getattr(raw, "id", None)
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
+
+
 def _persist_hitl_envelope(
     *,
     run_id: str,
@@ -846,12 +1266,90 @@ def _persist_hitl_envelope(
     session_id: str | None = None,
     idempotency_key: str | None = None,
 ) -> None:
+    """Persist order HITL pause using the durable execution envelope + lifecycle."""
+    from agent.execution_envelope import AgentExecutionEnvelope, OperationalPlan, PlanStep
+    from agent.execution_states import (
+        AUDIT_TOOL_PAUSED,
+        AUDIT_WAITING_FOR_HUMAN,
+        ExecutionStatus,
+        ExecutionType,
+    )
+
+    from agent.execution_engine import record_tool_finish, record_tool_start
+
+    goal = f"Create purchase order for approval {approval_id}"
+    tool_call_id = (
+        envelope.get("tool_call_id")
+        or (envelope.get("guards") or {}).get("tool_call_id")
+    )
+    waiting_reason = "Sensitive order tool requires explicit HITL approval."
+
+    # Merge into any pre-created execution (preserve tool_history / model_turns).
+    prior_history: list[Any] = []
+    prior_turns: list[Any] = []
+    prior_version = 1
+    prior_correlation = f"CORR-{run_id.replace('RUN-', '')}"
+    prior_status: str | None = None
+    with get_session() as session:
+        row = audit_repository.get_agent_run_state(session, run_id)
+        if row is not None:
+            prior_version = int(getattr(row, "version", 1) or 1)
+            prior_correlation = getattr(row, "correlation_id", None) or prior_correlation
+            prior_status = row.status
+            try:
+                from agent.execution_envelope import envelope_from_legacy
+
+                prior_env = envelope_from_legacy(
+                    json.loads(row.state_json) if isinstance(row.state_json, str) else row.state_json
+                )
+                prior_history = list(prior_env.tool_history or [])
+                prior_turns = list(prior_env.model_turns or [])
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to load prior execution envelope for HITL merge")
+
+    exec_envelope = AgentExecutionEnvelope(
+        goal=goal,
+        plan=OperationalPlan(
+            goal=goal,
+            steps=[
+                PlanStep(
+                    step_id="validate_approval",
+                    action="validate_approval",
+                    status="completed",
+                ),
+                PlanStep(
+                    step_id="create_order",
+                    action="create_mock_purchase_order",
+                    status="running",
+                    tool_name="create_mock_purchase_order",
+                ),
+            ],
+        ),
+        current_step="create_order",
+        next_action="await_human_approval",
+        mode=envelope.get("mode"),
+        sdk_run_state=envelope.get("sdk_run_state"),
+        pending_tool_name=envelope.get("pending_tool_name"),
+        pending_tool_args=envelope.get("pending_tool_args") or {},
+        guards=envelope.get("guards") or {},
+        version=envelope.get("version"),
+        requested_action=envelope.get("pending_tool_name") or "create_mock_purchase_order",
+        waiting_reason=waiting_reason,
+        tool_history=prior_history,
+        model_turns=prior_turns,
+        context={
+            "legacy_hitl": True,
+            "tool_call_id": tool_call_id,
+            "mode": envelope.get("mode"),
+        },
+    )
+    next_version = prior_version + 1 if prior_status is not None else 1
     with get_session() as session:
         audit_repository.save_agent_run_state(
             session,
             run_id=run_id,
-            state_json=envelope_to_json(envelope),
-            status="paused",
+            state_json=exec_envelope.model_dump_json(),
+            status=ExecutionStatus.WAITING_FOR_HUMAN.value,
             recommendation_id=recommendation_id,
             approval_id=approval_id,
             pending_tool_name=envelope.get("pending_tool_name"),
@@ -859,10 +1357,19 @@ def _persist_hitl_envelope(
             user_id=user_id,
             session_id=session_id,
             idempotency_key=idempotency_key,
+            execution_type=ExecutionType.ORDER_EXECUTION.value,
+            current_step="create_order",
+            next_action="await_human_approval",
+            waiting_reason=waiting_reason,
+            correlation_id=prior_correlation,
+            version=next_version,
+            expected_version=prior_version if prior_status is not None else None,
+            attempt_count=0,
+            max_attempts=3,
         )
         audit_repository.write_audit_event(
             session,
-            "tool_execution_paused",
+            AUDIT_WAITING_FOR_HUMAN,
             actor=actor,
             actor_role=actor_role,
             run_id=run_id,
@@ -870,12 +1377,126 @@ def _persist_hitl_envelope(
             approval_id=approval_id,
             user_id=user_id,
             session_id=session_id,
+            correlation_id=prior_correlation,
+            details={
+                "pending_tool_name": envelope.get("pending_tool_name"),
+                "requested_action": exec_envelope.requested_action,
+                "tool_call_id": tool_call_id,
+            },
+        )
+        audit_repository.write_audit_event(
+            session,
+            AUDIT_TOOL_PAUSED,
+            actor=actor,
+            actor_role=actor_role,
+            run_id=run_id,
+            recommendation_id=recommendation_id,
+            approval_id=approval_id,
+            user_id=user_id,
+            session_id=session_id,
+            correlation_id=prior_correlation,
             details={
                 "pending_tool_name": envelope.get("pending_tool_name"),
                 "pending_tool_args": envelope.get("pending_tool_args") or {},
                 "state_version": envelope.get("version"),
                 "mode": envelope.get("mode"),
+                "tool_call_id": tool_call_id,
             },
+        )
+    # Journal HITL-spanning tool call (SDK may not fire on_tool_start before pause).
+    if tool_call_id:
+        try:
+            record_tool_start(
+                run_id,
+                tool_name=str(
+                    envelope.get("pending_tool_name") or "create_mock_purchase_order"
+                ),
+                input_summary=envelope.get("pending_tool_args") or {},
+                actor=actor,
+                tool_call_id=str(tool_call_id),
+            )
+            record_tool_finish(
+                run_id,
+                tool_call_id=str(tool_call_id),
+                status="paused",
+                output_summary={"waiting_reason": waiting_reason},
+                actor=actor,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("HITL tool journal failed")
+
+
+def _complete_order_execution_preserving_journal(
+    *,
+    run_id: str,
+    recommendation_id: str | None,
+    approval_id: str,
+    actor: str,
+    actor_role: str,
+    purchase_order_id: str | None,
+    mode: str,
+    tool_call_id: str | None,
+    result: dict[str, Any] | None = None,
+) -> None:
+    """Mark order execution completed without wiping durable tool_history."""
+    from agent.execution_engine import try_complete_execution
+
+    try_complete_execution(
+        run_id,
+        result=result
+        or {
+            "mode": mode,
+            "approval_id": approval_id,
+            "purchase_order_id": purchase_order_id,
+            "tool_call_id": tool_call_id,
+        },
+        actor=actor,
+    )
+    # If still not completed (e.g. waiting_for_human), force status while keeping journal.
+    with get_session() as session:
+        row = audit_repository.get_agent_run_state(session, run_id)
+        if row is None:
+            return
+        if row.status != "completed":
+            audit_repository.save_agent_run_state(
+                session,
+                run_id=run_id,
+                state_json=row.state_json,
+                status="completed",
+                recommendation_id=recommendation_id or row.recommendation_id,
+                approval_id=approval_id or row.approval_id,
+                pending_tool_name=row.pending_tool_name,
+                pending_tool_args=json.loads(row.pending_tool_args_json or "{}"),
+                execution_type=getattr(row, "execution_type", None),
+                correlation_id=getattr(row, "correlation_id", None),
+                version=int(getattr(row, "version", 1) or 1) + 1,
+                expected_version=int(getattr(row, "version", 1) or 1),
+            )
+        audit_repository.write_audit_event(
+            session,
+            "tool_execution_resumed",
+            actor=actor,
+            actor_role=actor_role,
+            run_id=run_id,
+            recommendation_id=recommendation_id,
+            approval_id=approval_id,
+            purchase_order_id=purchase_order_id,
+            details={
+                "approved": True,
+                "mode": mode,
+                "tool_call_id": tool_call_id,
+            },
+        )
+        audit_repository.write_audit_event(
+            session,
+            "agent_execution_completed",
+            actor=actor,
+            actor_role=actor_role,
+            run_id=run_id,
+            recommendation_id=recommendation_id,
+            approval_id=approval_id,
+            purchase_order_id=purchase_order_id,
+            details={"mode": mode},
         )
 
 
@@ -894,21 +1515,25 @@ def _resume_deterministic_hitl(
         existing = purchase_order_repository.get_purchase_order_by_approval(
             session, approval_id
         )
+    tool_call_id = (
+        envelope.get("tool_call_id")
+        or (envelope.get("guards") or {}).get("tool_call_id")
+    )
     if existing is not None:
-        with get_session() as session:
-            audit_repository.save_agent_run_state(
-                session,
-                run_id=run_id,
-                state_json=envelope_to_json(envelope),
-                status="completed",
-                recommendation_id=recommendation_id,
-                approval_id=approval_id,
-                pending_tool_name=envelope.get("pending_tool_name"),
-                pending_tool_args=envelope.get("pending_tool_args") or {},
-            )
+        _complete_order_execution_preserving_journal(
+            run_id=run_id,
+            recommendation_id=recommendation_id,
+            approval_id=approval_id,
+            actor=actor,
+            actor_role=actor_role,
+            purchase_order_id=existing.purchase_order_id,
+            mode="idempotent_reload",
+            tool_call_id=tool_call_id,
+        )
         return {
             "status": "completed",
             "run_id": run_id,
+            "execution_id": run_id,
             "purchase_order": existing.model_dump(mode="json"),
             "mode": "idempotent_reload",
         }
@@ -919,31 +1544,36 @@ def _resume_deterministic_hitl(
         actor_role=actor_role,
         idempotency_key=f"po:{approval_id}",
     )
-    with get_session() as session:
-        audit_repository.save_agent_run_state(
-            session,
-            run_id=run_id,
-            state_json=envelope_to_json(envelope),
-            status="completed",
-            recommendation_id=recommendation_id,
-            approval_id=approval_id,
-            pending_tool_name=envelope.get("pending_tool_name"),
-            pending_tool_args=envelope.get("pending_tool_args") or {},
-        )
-        audit_repository.write_audit_event(
-            session,
-            "tool_execution_resumed",
-            actor=actor,
-            actor_role=actor_role,
-            run_id=run_id,
-            recommendation_id=recommendation_id,
-            approval_id=approval_id,
-            purchase_order_id=po.purchase_order_id,
-            details={"approved": True, "mode": "deterministic_hitl"},
-        )
+    if tool_call_id:
+        try:
+            from agent.execution_engine import record_tool_finish
+
+            record_tool_finish(
+                run_id,
+                tool_call_id=str(tool_call_id),
+                status="completed",
+                output_summary={
+                    "purchase_order_id": po.purchase_order_id,
+                    "approval_id": approval_id,
+                },
+                actor=actor,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("HITL resume tool journal failed")
+    _complete_order_execution_preserving_journal(
+        run_id=run_id,
+        recommendation_id=recommendation_id,
+        approval_id=approval_id,
+        actor=actor,
+        actor_role=actor_role,
+        purchase_order_id=po.purchase_order_id,
+        mode="deterministic_hitl",
+        tool_call_id=tool_call_id,
+    )
     return {
         "status": "completed",
         "run_id": run_id,
+        "execution_id": run_id,
         "purchase_order": po.model_dump(mode="json"),
         "mode": "deterministic_hitl",
         "message": "Purchase order created after sensitive-tool HITL approval.",
@@ -977,7 +1607,7 @@ def _resume_sdk_hitl(
     actor_role: str,
     envelope: dict[str, Any],
 ) -> dict[str, Any]:
-    agent = build_replenishment_agent()
+    agent = build_replenishment_agent(tools=ALL_TOOLS)
     sdk_payload = envelope.get("sdk_run_state") or {}
     if not isinstance(sdk_payload, dict):
         return {
@@ -1023,6 +1653,10 @@ def _resume_sdk_hitl(
     for interruption in interruptions:
         state.approve(interruption)
 
+    tool_call_id = (
+        envelope.get("tool_call_id")
+        or (envelope.get("guards") or {}).get("tool_call_id")
+    )
     with get_session() as session:
         audit_repository.write_audit_event(
             session,
@@ -1032,24 +1666,47 @@ def _resume_sdk_hitl(
             run_id=run_id,
             recommendation_id=recommendation_id,
             approval_id=approval_id,
-            details={"approved": True, "mode": "sdk"},
+            details={
+                "approved": True,
+                "mode": "sdk",
+                "tool_call_id": tool_call_id,
+            },
         )
 
+    from agent.execution_engine import get_execution
+    from agent.execution_states import ExecutionType
+
+    current = get_execution(run_id)
+    correlation_id = (current or {}).get("correlation_id")
+    context = _make_context(
+        run_id=run_id,
+        actor=actor,
+        actor_role=actor_role,
+        recommendation_id=recommendation_id,
+        execution_id=run_id,
+        correlation_id=correlation_id,
+        approval_id=approval_id,
+        execution_type=ExecutionType.ORDER_EXECUTION.value,
+    )
     run_config = _build_run_config(
         workflow_name=WORKFLOW_ORDER,
         group_id=run_id,
         trace_metadata={
             "run_id": run_id,
+            "execution_id": run_id,
+            "correlation_id": correlation_id,
             "recommendation_id": recommendation_id,
             "approval_id": approval_id,
             "workflow": WORKFLOW_ORDER,
             "resume": True,
+            "tool_call_id": tool_call_id,
         },
     )
     try:
         result = _execute_runner(
             agent,
             state,
+            context=context,
             max_turns=analysis_max_turns(),
             run_config=run_config,
         )
@@ -1065,6 +1722,9 @@ def _resume_sdk_hitl(
     if result.interruptions:
         new_state = result.to_state()
         sdk_json = new_state.to_json() if hasattr(new_state, "to_json") else {}
+        pause_call_id = (
+            _extract_interruption_tool_call_id(result.interruptions[0]) or tool_call_id
+        )
         new_envelope = build_pause_envelope(
             approval_id=approval_id,
             recommendation_id=str(recommendation_id or ""),
@@ -1079,6 +1739,7 @@ def _resume_sdk_hitl(
             mode="sdk",
             actor=actor,
             actor_role=actor_role,
+            tool_call_id=pause_call_id,
         )
         _persist_hitl_envelope(
             run_id=run_id,
@@ -1091,7 +1752,9 @@ def _resume_sdk_hitl(
         return {
             "status": "paused",
             "run_id": run_id,
+            "execution_id": run_id,
             "interruptions": [str(i) for i in result.interruptions],
+            "tool_call_id": pause_call_id,
             "message": "Agent paused again for additional tool approval.",
         }
 
@@ -1099,22 +1762,42 @@ def _resume_sdk_hitl(
         existing = purchase_order_repository.get_purchase_order_by_approval(
             session, approval_id
         )
-        completed_envelope = dict(envelope)
-        completed_envelope["sdk_run_state"] = (
-            result.to_state().to_json()
-            if hasattr(result, "to_state")
-            else envelope.get("sdk_run_state")
-        )
-        audit_repository.save_agent_run_state(
-            session,
-            run_id=run_id,
-            state_json=envelope_to_json(completed_envelope),
-            status="completed",
-            recommendation_id=recommendation_id,
-            approval_id=approval_id,
-            pending_tool_name=envelope.get("pending_tool_name"),
-            pending_tool_args=envelope.get("pending_tool_args") or {},
-        )
+
+    # Finalize paused tool journal before marking execution completed.
+    if tool_call_id:
+        try:
+            from agent.execution_engine import record_tool_finish
+
+            record_tool_finish(
+                run_id,
+                tool_call_id=str(tool_call_id),
+                status="completed",
+                output_summary={
+                    "purchase_order_id": (
+                        existing.purchase_order_id if existing is not None else None
+                    ),
+                    "approval_id": approval_id,
+                },
+                actor=actor,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("SDK HITL resume tool journal finalize failed")
+
+    _complete_order_execution_preserving_journal(
+        run_id=run_id,
+        recommendation_id=recommendation_id,
+        approval_id=approval_id,
+        actor=actor,
+        actor_role=actor_role,
+        purchase_order_id=existing.purchase_order_id if existing is not None else None,
+        mode="sdk",
+        tool_call_id=tool_call_id,
+        result={
+            "mode": "sdk",
+            "approval_id": approval_id,
+            "tool_call_id": tool_call_id,
+        },
+    )
 
     output = result.final_output
     if isinstance(output, ReplenishmentAgentDecision):
@@ -1127,7 +1810,9 @@ def _resume_sdk_hitl(
         payload["purchase_order"] = existing.model_dump(mode="json")
     payload["status"] = "completed"
     payload["run_id"] = run_id
+    payload["execution_id"] = run_id
     payload["mode"] = "sdk"
+    payload["tool_call_id"] = tool_call_id
     return payload
 
 

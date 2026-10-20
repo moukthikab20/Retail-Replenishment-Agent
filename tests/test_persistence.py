@@ -47,6 +47,7 @@ def test_workflow_tables_exist():
         "human_reviews",
         "approvals",
         "purchase_orders",
+        "erp_outbox",
         "audit_events",
         "agent_run_states",
     }.issubset(tables)
@@ -165,7 +166,9 @@ def test_unique_purchase_order_and_idempotency_key():
                     approved_final_quantity=po1.approved_final_quantity,
                     override_used=False,
                     override_reason=None,
-                    status="Draft — Mock ERP",
+                    status="pending_erp",
+                    order_status="pending_erp",
+                    lines_json="[]",
                     created_at=datetime.now(timezone.utc),
                     idempotency_key="different-key-same-approval",
                     user_id="u2",

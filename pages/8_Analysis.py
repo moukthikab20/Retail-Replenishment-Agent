@@ -7,7 +7,6 @@ import plotly.express as px
 import streamlit as st
 
 from config import AS_OF_DATE
-from repositories import csv_repository
 from services import auth_service, forecast_service, product_service, recommendation_service
 from services.errors import user_facing_error
 from ui_common import bootstrap_app
@@ -32,28 +31,44 @@ def _format_next_action(value: object) -> str:
 
 def main() -> None:
     user = bootstrap_app(
-        "Analysis | Retail Replenishment Agent",
-        active_nav="analysis",
+        "Manual Analysis | Retail Replenishment Agent",
+        active_nav="administration",
     )
     actor = user["user_id"]
     role = user["role"]
     session_id = user["session_id"]
 
-    page_heading("Analysis", "Seven-day forecast and replenishment recommendation")
+    page_heading(
+        "Manual Analysis",
+        "Diagnostic forecast and scenario tools for a selected store and item.",
+    )
 
     stores = product_service.list_stores()
     store_options = {s["store_name"]: s["store_id"] for s in stores}
+    store_ids = {s["store_id"]: s["store_name"] for s in stores}
+
+    nav_store = st.session_state.get("nav_store_id")
+    default_store_name = store_ids.get(nav_store) if nav_store in store_ids else None
 
     t1, t2 = st.columns(2)
     with t1:
-        selected_store_name = st.selectbox("Store", options=list(store_options.keys()))
+        store_names = list(store_options.keys())
+        store_index = store_names.index(default_store_name) if default_store_name in store_names else 0
+        selected_store_name = st.selectbox(
+            "Store",
+            options=store_names,
+            index=store_index,
+        )
     store_id = store_options[selected_store_name]
     skus = product_service.list_store_skus(store_id)
     products = {sku: product_service.get_product_details(sku) for sku in skus}
+    nav_sku = st.session_state.get("nav_sku")
+    sku_index = skus.index(nav_sku) if nav_sku in skus else 0
     with t2:
         selected_sku = st.selectbox(
             "SKU",
             options=skus,
+            index=sku_index,
             format_func=lambda s: f"{s} — {products[s].product_name}",
         )
 
@@ -68,7 +83,9 @@ def main() -> None:
     if st.session_state.get("_analysis_context") != context_key:
         st.session_state["_analysis_context"] = context_key
         st.session_state.pop("analysis_decision", None)
-        st.session_state.pop("recommendation_id", None)
+        # Keep recommendation_id when opened from Recommendation Detail.
+        if not st.session_state.get("nav_recommendation_id"):
+            st.session_state.pop("recommendation_id", None)
         st.session_state.pop("follow_up_answer", None)
         st.session_state.pop("follow_up_question", None)
 
@@ -118,9 +135,8 @@ def main() -> None:
     with left:
         with st.container(border=True):
             panel_title("Sales Trend", "Last 14 days")
-            sales_df = csv_repository.get_sales_frame()
-            trend = forecast_service.build_sales_trend(
-                sales_df, store_id, selected_sku, pd.Timestamp(AS_OF_DATE), days=14
+            trend = forecast_service.get_sales_trend(
+                store_id, selected_sku, as_of_date=AS_OF_DATE, days=14
             )
             if trend.empty:
                 st.markdown(

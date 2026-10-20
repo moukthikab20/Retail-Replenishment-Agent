@@ -20,12 +20,13 @@ def _app() -> AppTest:
 
 
 def test_example_prompts_include_required_patterns():
-    prompts = example_follow_up_prompts(72)
+    prompts = example_follow_up_prompts(96)
     joined = " ".join(prompts).lower()
-    assert "why is the recommendation 72 units" in joined
+    assert "why was this held" in joined
+    assert "which guardrail failed" in joined
+    assert "why 96 units" in joined
     assert "what happens if i order" in joined
-    assert "delayed by two days" in joined
-    assert "risk" in joined
+    assert "supplier is 2 days late" in joined
 
 
 def test_follow_up_section_hidden_without_recommendation():
@@ -61,8 +62,9 @@ def test_follow_up_section_renders_compact_controls_when_recommendation_exists()
 
     page_text = " ".join(str(m.value) for m in at.markdown).lower()
     assert "example prompts" in page_text
-    assert "why is the recommendation 72 units" in page_text
-    assert "delayed by two days" in page_text
+    assert "why was this held" in page_text
+    assert "guardrail" in page_text
+    assert "2 days late" in page_text
     assert at.text_input
     assert at.selectbox
 
@@ -105,8 +107,9 @@ def test_ask_displays_structured_fields_not_raw_json(monkeypatch):
     assert not at.exception
     page_text = " ".join(str(m.value) for m in at.markdown)
     assert "forecast" in page_text.lower() or "saved recommendation" in page_text.lower()
-    assert "Verified facts" in page_text
+    assert "Verified internal values" in page_text or "Verified facts" in page_text
     assert "Assumptions" in page_text
+    assert f"agent_recommended_quantity={rec.agent_recommended_quantity}" in page_text
     # Raw JSON checkbox present but off by default.
     assert at.checkbox
     assert all(c.value is False for c in at.checkbox)

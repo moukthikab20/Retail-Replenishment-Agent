@@ -36,6 +36,7 @@ def create_approval_request(
     actor_role: str | None = None,
     user_id: str | None = None,
     session_id: str | None = None,
+    authentication_source: str | None = None,
 ) -> ApprovalRequest:
     if actor_role is not None:
         auth_service.require_permission(
@@ -96,6 +97,8 @@ def create_approval_request(
             approval_id=approval.approval_id,
             user_id=approval.user_id,
             session_id=approval.session_id,
+            authentication_source=authentication_source
+            or ("system" if actor == "system" else "demo"),
             details={"required_role": required_role},
         )
         return approval
@@ -108,6 +111,8 @@ def decide_approval(
     actor: str,
     actor_role: str,
     rejection_reason: str | None = None,
+    authentication_source: str | None = None,
+    session_id: str | None = None,
 ) -> ApprovalRequest:
     """Record approve or reject. Never treats chat text as approval."""
     decision = decision.lower().strip()
@@ -149,7 +154,7 @@ def decide_approval(
         recommendation_repository.update_recommendation_status(
             session,
             approval.recommendation_id,
-            "approved" if decision == "approve" else "approval_rejected",
+            "approved" if decision == "approve" else "declined",
         )
         audit_repository.write_audit_event(
             session,
@@ -159,12 +164,89 @@ def decide_approval(
             recommendation_id=approval.recommendation_id,
             review_id=approval.review_id,
             approval_id=approval.approval_id,
+            session_id=session_id or approval.session_id,
+            authentication_source=authentication_source or "demo",
             details={
                 "approved_final_quantity": approval.approved_final_quantity,
                 "allowed_roles_checked": sorted(allowed),
             },
         )
-        return approval
+    try:
+        from eventbus.events import EventType
+        from eventbus.publisher import safe_publish
+
+        if decision == "approve":
+            safe_publish(
+                EventType.RECOMMENDATION_APPROVED,
+                aggregate_type="recommendation",
+                aggregate_id=approval.recommendation_id,
+                payload={
+                    "approval_id": approval.approval_id,
+                    "execution_id": None,
+                },
+                actor=actor,
+                metadata={"idempotency_key": f"rec-approved:{approval.approval_id}"},
+            )
+            safe_publish(
+                EventType.HUMAN_APPROVED,
+                aggregate_type="approval",
+                aggregate_id=approval.approval_id,
+                payload={
+                    "recommendation_id": approval.recommendation_id,
+                    "approval_id": approval.approval_id,
+                },
+                actor=actor,
+                metadata={"idempotency_key": f"human-approved:{approval.approval_id}"},
+            )
+            safe_publish(
+                EventType.APPROVAL_COMPLETED,
+                aggregate_type="approval",
+                aggregate_id=approval.approval_id,
+                payload={
+                    "decision": "approve",
+                    "recommendation_id": approval.recommendation_id,
+                    "approval_id": approval.approval_id,
+                },
+                actor=actor,
+                metadata={"idempotency_key": f"approval-done:{approval.approval_id}"},
+            )
+        else:
+            safe_publish(
+                EventType.RECOMMENDATION_REJECTED,
+                aggregate_type="recommendation",
+                aggregate_id=approval.recommendation_id,
+                payload={"approval_id": approval.approval_id},
+                actor=actor,
+                metadata={"idempotency_key": f"rec-rejected:{approval.approval_id}"},
+            )
+            safe_publish(
+                EventType.HUMAN_REJECTED,
+                aggregate_type="approval",
+                aggregate_id=approval.approval_id,
+                payload={
+                    "recommendation_id": approval.recommendation_id,
+                    "approval_id": approval.approval_id,
+                },
+                actor=actor,
+                metadata={"idempotency_key": f"human-rejected:{approval.approval_id}"},
+            )
+            safe_publish(
+                EventType.APPROVAL_COMPLETED,
+                aggregate_type="approval",
+                aggregate_id=approval.approval_id,
+                payload={
+                    "decision": "reject",
+                    "recommendation_id": approval.recommendation_id,
+                    "approval_id": approval.approval_id,
+                },
+                actor=actor,
+                metadata={
+                    "idempotency_key": f"approval-done-reject:{approval.approval_id}"
+                },
+            )
+    except Exception:  # noqa: BLE001
+        pass
+    return approval
 
 
 def check_approval_status(approval_id: str) -> dict[str, Any]:

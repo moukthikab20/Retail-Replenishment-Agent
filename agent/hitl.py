@@ -33,16 +33,21 @@ def build_pause_envelope(
     mode: str,
     actor: str | None = None,
     actor_role: str | None = None,
+    tool_call_id: str | None = None,
 ) -> dict[str, Any]:
     """Versioned envelope stored in agent_run_states.state_json."""
+    from uuid import uuid4
+
     paused_at = utcnow()
     expires_at = paused_at + timedelta(minutes=HITL_RESUME_TTL_MINUTES)
+    call_id = tool_call_id or f"TC-{uuid4().hex[:12]}"
     return {
         "version": AGENT_RUN_STATE_VERSION,
         "mode": mode,  # "sdk" | "deterministic_hitl"
         "sdk_run_state": _sanitize_jsonable(sdk_run_state) if sdk_run_state else None,
         "pending_tool_name": pending_tool_name,
         "pending_tool_args": _sanitize_jsonable(pending_tool_args),
+        "tool_call_id": call_id,
         "guards": {
             "approval_id": approval_id,
             "recommendation_id": recommendation_id,
@@ -52,6 +57,7 @@ def build_pause_envelope(
             "expires_at": expires_at.isoformat(),
             "actor_at_pause": actor,
             "actor_role_at_pause": actor_role,
+            "tool_call_id": call_id,
         },
     }
 
@@ -84,8 +90,10 @@ def validate_resume_guards(
     Enforce formal approval still valid for SDK tool resume.
 
     Blocks expired pauses and changed approved quantities.
+    Accepts legacy `paused` and engine `waiting_for_human`.
     """
-    if row_status and row_status != expect_paused_status:
+    waiting_statuses = {"paused", "waiting_for_human", expect_paused_status}
+    if row_status and row_status not in waiting_statuses:
         raise AppError(
             f"Agent run is not paused (status={row_status}).",
             code="hitl_not_paused",

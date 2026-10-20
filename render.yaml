@@ -45,3 +45,65 @@ services:
         value: "20"
       - key: RATE_LIMIT_WINDOW_MINUTES
         value: "60"
+      - key: REPLENISHMENT_SCHEDULE_ENABLED
+        value: "true"
+      - key: REPLENISHMENT_RUN_INTERVAL_HOURS
+        value: "6"
+      - key: REPLENISHMENT_CRON
+        value: "0 */6 * * *"
+      - key: REPLENISHMENT_TIMEZONE
+        value: UTC
+      - key: REPLENISHMENT_STALE_TOLERANCE_MINUTES
+        value: "90"
+      - key: BATCH_SCHEDULE_CRON
+        value: "0 */6 * * *"
+      - key: BATCH_SCHEDULE_TIMEZONE
+        value: UTC
+      - key: CRON_SECRET
+        sync: false
+      - key: ERP_ADAPTER
+        value: mock
+
+  # Simplest Render demo scheduler: native Cron Job every 6 hours.
+  # Requires a paid cron-capable plan; on free-only accounts use an external
+  # cron (GitHub Actions / system cron) with the same startCommand + DATABASE_URL.
+  - type: cron
+    name: retail-replenishment-batch
+    runtime: python
+    plan: starter
+    region: oregon
+    branch: proper-agent-development
+    schedule: "0 */6 * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: >-
+      python -m jobs.run_replenishment
+      --trigger scheduled
+      --initiated-by render-cron
+      --cron-secret "$CRON_SECRET"
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: PYTHON_VERSION
+        value: "3.11.7"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: retail-replenishment-db
+          property: connectionString
+      - key: CRON_SECRET
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: REPLENISHMENT_SCHEDULE_ENABLED
+        value: "true"
+      - key: REPLENISHMENT_RUN_INTERVAL_HOURS
+        value: "6"
+      - key: REPLENISHMENT_CRON
+        value: "0 */6 * * *"
+      - key: REPLENISHMENT_TIMEZONE
+        value: UTC
+      - key: REPLENISHMENT_STALE_TOLERANCE_MINUTES
+        value: "90"
+      - key: BATCH_SCHEDULE_CRON
+        value: "0 */6 * * *"
+      - key: BATCH_SCHEDULE_TIMEZONE
+        value: UTC

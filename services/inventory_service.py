@@ -6,15 +6,27 @@ from datetime import datetime, timezone
 from typing import Any
 
 from config import AS_OF_DATE, INVENTORY_STALE_DAYS
+from integrations.factory import get_inventory_provider
 from models.inventory import InventoryPosition
-from repositories import csv_repository
 
 
 def get_inventory_position(store_id: str, sku: str) -> InventoryPosition:
-    position = csv_repository.get_inventory_position(store_id, sku)
-    if position is None:
+    result = get_inventory_provider().get_inventory_position(store_id, sku)
+    if result is None:
         raise ValueError(f"No inventory for store={store_id} sku={sku}")
-    return position
+    return result.position
+
+
+def get_inventory_position_with_source(store_id: str, sku: str) -> dict[str, Any]:
+    result = get_inventory_provider().get_inventory_position(store_id, sku)
+    if result is None:
+        raise ValueError(f"No inventory for store={store_id} sku={sku}")
+    return {
+        "position": result.position,
+        "source": result.source,
+        "provider_name": result.provider_name,
+        "freshness_updated_at": result.freshness_updated_at,
+    }
 
 
 def is_inventory_stale(

@@ -15,6 +15,11 @@ class HumanReplenishmentReview(BaseModel):
     human_proposed_quantity: int = Field(ge=0)
     override_used: bool
     override_reason: str | None = None
+    reason_code: str | None = None
+    comments: str | None = None
+    decision_action: str | None = None
+    quantity_source: str = "agent"
+    ai_recommendation_unavailable: bool = False
     difference_units: int
     difference_percent: Decimal
     projected_days_of_supply: Decimal | None = None

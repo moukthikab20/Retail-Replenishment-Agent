@@ -44,6 +44,13 @@ def save_recommendation(
         case_pack=int(extras.get("case_pack", 1)),
         average_daily_sales=float(extras.get("average_daily_sales", 0)),
         run_id=extras.get("run_id"),
+        disposition=extras.get("disposition"),
+        policy_id=extras.get("policy_id"),
+        policy_version=extras.get("policy_version"),
+        policy_evaluation_json=json.dumps(
+            extras.get("policy_evaluation") or extras.get("policy_result") or {},
+            default=str,
+        ),
         payload_json=json.dumps(payload, default=str),
         user_id=recommendation.user_id,
         session_id=recommendation.session_id,
@@ -87,6 +94,50 @@ def update_recommendation_status(session: Session, recommendation_id: str, statu
     if row is None:
         raise ValueError(f"Recommendation not found: {recommendation_id}")
     row.status = status
+    session.flush()
+
+
+def update_recommendation_workflow(
+    session: Session,
+    recommendation_id: str,
+    *,
+    status: str | None = None,
+    disposition: str | None = None,
+    recommendation_version: int | None = None,
+    declined_by: str | None = None,
+    declined_role: str | None = None,
+    declined_at=None,
+    decline_reason: str | None = None,
+    decline_reason_code: str | None = None,
+    clear_decline: bool = False,
+) -> None:
+    """Update workflow status and/or disposition without recalculating quantities."""
+    row = session.get(RecommendationRow, recommendation_id)
+    if row is None:
+        raise ValueError(f"Recommendation not found: {recommendation_id}")
+    if status is not None:
+        row.status = status
+    if disposition is not None:
+        row.disposition = disposition
+    if recommendation_version is not None:
+        row.recommendation_version = recommendation_version
+    if clear_decline:
+        row.declined_by = None
+        row.declined_role = None
+        row.declined_at = None
+        row.decline_reason = None
+        row.decline_reason_code = None
+    else:
+        if declined_by is not None:
+            row.declined_by = declined_by
+        if declined_role is not None:
+            row.declined_role = declined_role
+        if declined_at is not None:
+            row.declined_at = declined_at
+        if decline_reason is not None:
+            row.decline_reason = decline_reason
+        if decline_reason_code is not None:
+            row.decline_reason_code = decline_reason_code
     session.flush()
 
 

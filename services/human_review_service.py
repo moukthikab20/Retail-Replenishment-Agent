@@ -163,6 +163,13 @@ def submit_human_review(
     actor_role: str | None = None,
     user_id: str | None = None,
     session_id: str | None = None,
+    reason_code: str | None = None,
+    comments: str | None = None,
+    decision_action: str | None = None,
+    quantity_source: str = "agent",
+    ai_recommendation_unavailable: bool = False,
+    force_escalation: bool = False,
+    authentication_source: str | None = None,
 ) -> HumanReplenishmentReview:
     if actor_role is not None:
         auth_service.require_permission(
@@ -179,13 +186,24 @@ def submit_human_review(
     if not preview["valid"]:
         raise ValueError("; ".join(preview["validation_messages"]))
 
+    requires_escalation = bool(preview["requires_escalation"] or force_escalation)
+    approval_level = "elevated" if force_escalation else preview["approval_level"]
+    if force_escalation:
+        requires_escalation = True
+        approval_level = "elevated"
+
     review = HumanReplenishmentReview(
         review_id=f"REV-{uuid4().hex[:12]}",
         recommendation_id=recommendation_id,
         agent_recommended_quantity=preview["agent_recommended_quantity"],
         human_proposed_quantity=preview["human_proposed_quantity"],
-        override_used=preview["override_used"],
+        override_used=preview["override_used"] or ai_recommendation_unavailable,
         override_reason=preview["override_reason"],
+        reason_code=reason_code,
+        comments=comments,
+        decision_action=decision_action,
+        quantity_source=quantity_source,
+        ai_recommendation_unavailable=ai_recommendation_unavailable,
         difference_units=preview["difference_units"],
         difference_percent=Decimal(str(preview["difference_percent"])),
         projected_days_of_supply=(
@@ -194,12 +212,12 @@ def submit_human_review(
             else None
         ),
         projected_risk=preview["projected_risk"],
-        requires_escalation=preview["requires_escalation"],
+        requires_escalation=requires_escalation,
         submitted_by=submitted_by,
         submitted_at=datetime.now(timezone.utc),
         status="submitted",
         validation_messages=preview["validation_messages"],
-        approval_level=preview["approval_level"],
+        approval_level=approval_level,
         nearest_lower_case_pack=preview["nearest_lower_case_pack"],
         nearest_higher_case_pack=preview["nearest_higher_case_pack"],
         case_pack_compliant=preview["case_pack_compliant"],
@@ -222,9 +240,13 @@ def submit_human_review(
                 review_id=review.review_id,
                 user_id=review.user_id,
                 session_id=review.session_id,
+                authentication_source=authentication_source or "demo",
                 details={
                     "agent_recommended_quantity": review.agent_recommended_quantity,
                     "human_proposed_quantity": review.human_proposed_quantity,
+                    "reason_code": reason_code,
+                    "quantity_source": quantity_source,
+                    "ai_recommendation_unavailable": ai_recommendation_unavailable,
                 },
             )
         audit_repository.write_audit_event(
@@ -234,9 +256,18 @@ def submit_human_review(
             actor_role=actor_role,
             recommendation_id=recommendation_id,
             review_id=review.review_id,
+            store_id=preview.get("store_id"),
+            sku=preview.get("sku"),
             user_id=review.user_id,
             session_id=review.session_id,
-            details={"approval_level": review.approval_level},
+            authentication_source=authentication_source or "demo",
+            details={
+                "approval_level": review.approval_level,
+                "decision_action": decision_action,
+                "reason_code": reason_code,
+                "store_id": preview.get("store_id"),
+                "sku": preview.get("sku"),
+            },
         )
     return review
 

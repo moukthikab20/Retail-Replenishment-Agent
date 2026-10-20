@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -62,6 +63,11 @@ def create_recommendation_record(
     user_id: str | None = None,
     session_id: str | None = None,
     enforce_rate_limit: bool = True,
+    disposition: str | None = None,
+    status: str | None = None,
+    policy_result: dict[str, Any] | None = None,
+    actor_role: str | None = None,
+    authentication_source: str | None = None,
 ) -> Recommendation:
     """
     Persist a recommendation.
@@ -70,11 +76,23 @@ def create_recommendation_record(
     verified values are stored. Otherwise the deterministic pipeline runs
     (used by the no-API-key fallback).
     """
+    from services import auth_service
+
+    if actor_role is not None:
+        auth_service.authorize_run_analysis(actor_role)
+
     if enforce_rate_limit:
         rate_limit_service.assert_within_agent_run_limit(user_id)
 
+    from config import FORECAST_HORIZON_DAYS, FORECAST_LOOKBACK_DAYS
+
     product = product_service.get_product_details(sku)
     inventory = inventory_service.get_inventory_position(store_id, sku)
+    open_orders = inventory_service.get_open_orders(store_id, sku)
+
+    forecast_method = "trailing_average"
+    forecast_days = FORECAST_HORIZON_DAYS
+    forecast_generated_at: str | None = None
 
     if forecast_result and replenishment_result and risk_result:
         forecast_units = forecast_result.get("forecast_units")
@@ -91,6 +109,11 @@ def create_recommendation_record(
         average_daily_sales = forecast_result.get("average_daily_sales", 0)
         constraints = replenishment_result.get("constraints_applied") or []
         risk_reasons = risk_result.get("reasons") or []
+        forecast_method = str(forecast_result.get("method") or forecast_method)
+        forecast_days = int(forecast_result.get("forecast_days") or forecast_days)
+        forecast_generated_at = forecast_result.get("generated_at")
+        if forecast_generated_at is not None and hasattr(forecast_generated_at, "isoformat"):
+            forecast_generated_at = forecast_generated_at.isoformat()
         if not rationale:
             rationale = (
                 f"Stored recommendation for {product.product_name}: "
@@ -114,6 +137,9 @@ def create_recommendation_record(
         average_daily_sales = float(forecast.average_daily_sales)
         constraints = replenishment.constraints_applied
         risk_reasons = risk["reasons"]
+        forecast_method = str(forecast.method)
+        forecast_days = int(forecast.forecast_days)
+        forecast_generated_at = forecast.generated_at.isoformat()
 
     recommendation = Recommendation(
         recommendation_id=f"REC-{uuid4().hex[:12]}",
@@ -125,10 +151,16 @@ def create_recommendation_record(
         risk_level=str(risk_level),
         rationale=rationale,
         created_at=datetime.now(timezone.utc),
-        status="pending_review",
+        status=status or "pending_review",
         user_id=user_id,
         session_id=session_id,
     )
+    open_order_qty = int((open_orders or {}).get("open_order_quantity") or 0)
+
+    rounded_qty = int(recommended)
+    raw_f = float(raw_quantity)
+    constraint_adjustment = round(rounded_qty - raw_f, 4)
+
     extras = {
         "product_name": product.product_name,
         "usable_on_hand": inventory.usable_on_hand,
@@ -141,9 +173,52 @@ def create_recommendation_record(
         "case_pack": case_pack,
         "average_daily_sales": float(average_daily_sales),
         "run_id": run_id,
+        "disposition": disposition,
         "constraints_applied": constraints,
         "risk_reasons": risk_reasons,
+        "policy_result": policy_result or {},
+        "policy_evaluation": policy_result or {},
+        "policy_id": (policy_result or {}).get("policy_id"),
+        "policy_version": (policy_result or {}).get("policy_version"),
+        # Frozen evidence snapshot — detail UI must prefer these over live recalculation.
+        "evidence": {
+            "on_hand": inventory.on_hand,
+            "reserved": inventory.reserved,
+            "open_order_quantity": open_order_qty,
+            "forecast_method": forecast_method,
+            "forecast_days": forecast_days,
+            "forecast_lookback_days": FORECAST_LOOKBACK_DAYS,
+            "forecast_generated_at": forecast_generated_at,
+            "minimum_order_quantity": product.minimum_order_quantity,
+            "maximum_order_quantity": product.maximum_order_quantity,
+            "unit_cost": float(product.unit_cost),
+            "rounded_quantity": rounded_qty,
+            "constraint_adjustment": constraint_adjustment,
+            "vendor": None,
+            "supplier_lead_time_days": None,
+            "shelf_capacity": None,
+            "arrival_estimate": None,
+            "inventory_source": None,
+            "sales_source": None,
+            "product_source": None,
+        },
     }
+    try:
+        from integrations.factory import (
+            get_inventory_provider,
+            get_product_provider,
+            get_sales_provider,
+            get_supplier_provider,
+        )
+
+        supplier = get_supplier_provider().get_default_vendor()
+        extras["evidence"]["vendor"] = supplier.vendor_name
+        extras["evidence"]["supplier_lead_time_days"] = supplier.lead_time_days
+        extras["evidence"]["inventory_source"] = get_inventory_provider().source_label
+        extras["evidence"]["sales_source"] = get_sales_provider().source_label
+        extras["evidence"]["product_source"] = get_product_provider().source_label
+    except Exception:  # noqa: BLE001
+        pass
     with get_session() as session:
         recommendation_repository.save_recommendation(session, recommendation, extras)
         audit_repository.write_audit_event(
@@ -152,15 +227,44 @@ def create_recommendation_record(
             actor=actor,
             run_id=run_id,
             recommendation_id=recommendation.recommendation_id,
+            store_id=store_id,
+            sku=sku,
             user_id=user_id,
             session_id=session_id,
+            authentication_source=authentication_source
+            or ("agent" if (actor or "").lower() in {"agent", "assistant"} else None),
             details={
                 "store_id": store_id,
                 "sku": sku,
                 "agent_recommended_quantity": recommendation.agent_recommended_quantity,
                 "risk_level": recommendation.risk_level,
+                "disposition": disposition,
+                "status": recommendation.status,
             },
         )
+    try:
+        from eventbus.events import EventType
+        from eventbus.publisher import safe_publish
+
+        safe_publish(
+            EventType.RECOMMENDATION_CREATED,
+            aggregate_type="recommendation",
+            aggregate_id=recommendation.recommendation_id,
+            payload={
+                "store_id": store_id,
+                "sku": sku,
+                "status": recommendation.status,
+                "disposition": disposition,
+                "run_id": run_id,
+            },
+            actor=actor,
+            correlation_id=run_id,
+            metadata={
+                "idempotency_key": f"rec-created:{recommendation.recommendation_id}"
+            },
+        )
+    except Exception:  # noqa: BLE001
+        pass
     return recommendation
 
 
@@ -176,6 +280,10 @@ def get_recommendation(
         row = recommendation_repository.get_recommendation_row(session, recommendation_id)
         if recommendation is None or row is None:
             raise ValueError(f"Recommendation not found: {recommendation_id}")
+        try:
+            payload = json.loads(row.payload_json or "{}")
+        except json.JSONDecodeError:
+            payload = {}
         data = recommendation.model_dump(mode="json")
         data.update(
             {
@@ -188,6 +296,13 @@ def get_recommendation(
                 "case_pack": row.case_pack,
                 "average_daily_sales": row.average_daily_sales,
                 "run_id": row.run_id,
+                "disposition": row.disposition,
+                "policy_id": row.policy_id,
+                "policy_version": row.policy_version,
+                "policy_evaluation": json.loads(row.policy_evaluation_json or "{}"),
+                "constraints_applied": payload.get("constraints_applied") or [],
+                "risk_reasons": payload.get("risk_reasons") or [],
+                "evidence": payload.get("evidence") or {},
                 "user_id": row.user_id,
                 "session_id": row.session_id,
             }

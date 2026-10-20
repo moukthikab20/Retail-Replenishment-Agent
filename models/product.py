@@ -15,6 +15,12 @@ class Product(BaseModel):
     minimum_order_quantity: int = Field(ge=0, default=0)
     maximum_order_quantity: int = Field(gt=0)
     safety_stock_units: int = Field(ge=0, default=0)
+    # Optional shelf face/capacity cap (units). When set, order qty is reduced so
+    # usable_on_hand + in_transit + recommended_quantity does not exceed capacity.
+    shelf_capacity: int | None = Field(default=None, ge=0)
+    category: str | None = None
+    vendor_id: str | None = None
+    vendor_name: str | None = None
 
     @field_validator("unit_cost", mode="before")
     @classmethod

@@ -1,4 +1,4 @@
-"""CSV-backed read repository for products, inventory, and sales."""
+"""CSV-backed read repository for products, inventory, sales, and daily outcomes."""
 
 from __future__ import annotations
 
@@ -18,6 +18,17 @@ from config import (
 from models.inventory import InventoryPosition
 from models.product import Product
 
+INVENTORY_DAILY_COLUMNS = (
+    "date",
+    "store_id",
+    "sku",
+    "units_sold",
+    "ending_on_hand",
+    "is_stockout",
+    "retail_price",
+    "expected_demand",
+)
+
 
 @lru_cache(maxsize=1)
 def _load_frames(data_dir: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -29,8 +40,19 @@ def _load_frames(data_dir: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
     return products, inventory, sales
 
 
+@lru_cache(maxsize=1)
+def _load_inventory_daily(data_dir: str) -> pd.DataFrame:
+    path = Path(data_dir) / "inventory_daily.csv"
+    if not path.exists():
+        return pd.DataFrame(columns=list(INVENTORY_DAILY_COLUMNS))
+    daily = pd.read_csv(path)
+    daily["date"] = pd.to_datetime(daily["date"])
+    return daily
+
+
 def clear_csv_cache() -> None:
     _load_frames.cache_clear()
+    _load_inventory_daily.cache_clear()
 
 
 def get_frames(data_dir: Path | None = None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -67,6 +89,22 @@ def get_product(sku: str, data_dir: Path | None = None) -> Product | None:
         else DEFAULT_MAXIMUM_ORDER_QUANTITY
     )
     unit_cost = row["unit_cost"] if "unit_cost" in row.index else DEFAULT_UNIT_COST
+    category = str(row["category"]) if "category" in row.index and pd.notna(row["category"]) else None
+    vendor_id = (
+        str(row["vendor_id"]) if "vendor_id" in row.index and pd.notna(row["vendor_id"]) else None
+    )
+    vendor_name = (
+        str(row["vendor_name"])
+        if "vendor_name" in row.index and pd.notna(row["vendor_name"])
+        else None
+    )
+    if vendor_name is None and vendor_id:
+        try:
+            from services.demo_catalog import VENDOR_BY_ID
+
+            vendor_name = str(VENDOR_BY_ID[vendor_id]["vendor_name"])
+        except Exception:  # noqa: BLE001
+            vendor_name = None
     return Product(
         sku=str(row["sku"]),
         product_name=str(row["product_name"]),
@@ -75,6 +113,9 @@ def get_product(sku: str, data_dir: Path | None = None) -> Product | None:
         minimum_order_quantity=max(0, min_qty),
         maximum_order_quantity=max(case_pack, max_qty),
         safety_stock_units=int(row["safety_stock_units"]),
+        category=category,
+        vendor_id=vendor_id,
+        vendor_name=vendor_name,
     )
 
 
@@ -109,3 +150,7 @@ def get_inventory_position(
 def get_sales_frame(data_dir: Path | None = None) -> pd.DataFrame:
     _, _, sales = get_frames(data_dir)
     return sales.copy()
+
+
+def get_inventory_daily_frame(data_dir: Path | None = None) -> pd.DataFrame:
+    return _load_inventory_daily(str(data_dir or DATA_DIR)).copy()

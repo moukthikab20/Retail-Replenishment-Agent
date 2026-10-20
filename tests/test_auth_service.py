@@ -13,15 +13,21 @@ from services import (
 )
 
 
-def test_access_code_and_named_user_login(monkeypatch):
-    monkeypatch.setattr("services.auth_service.DEMO_ACCESS_CODE", "secret-demo")
+def test_named_user_workspace_selection(monkeypatch):
+    monkeypatch.setattr("config.APP_ENV", "production")
+    monkeypatch.setattr("integrations.auth.demo_provider.APP_ENV", "production")
     monkeypatch.setattr("services.auth_service.APP_ENV", "production")
     with pytest.raises(auth_service.AuthError):
-        auth_service.authenticate("wrong", "alex.store")
-    identity = auth_service.authenticate("secret-demo", "alex.store")
+        auth_service.authenticate(user_id="unknown.user")
+    identity = auth_service.select_demo_user("alex.store")
     assert identity["user_id"] == "alex.store"
     assert identity["role"] == "store_manager"
     assert identity["session_id"].startswith("SESS-")
+    assert identity.get("session_token")
+    assert identity.get("authentication_source") == "demo"
+    # Access codes are ignored if still passed by legacy callers.
+    legacy = auth_service.authenticate("anything", "jamie.planner")
+    assert legacy["user_id"] == "jamie.planner"
 
 
 def test_demo_users_include_all_required_roles():

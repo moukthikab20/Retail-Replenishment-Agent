@@ -8,6 +8,10 @@ venv/
 retail_agent.db
 data/agent_sessions.sqlite
 *.db-journal
+# Local SQLite databases and schema snapshots
+*.db
+*.sqlite
+*.sqlite3
 .mypy_cache/
 .ruff_cache/
 .coverage

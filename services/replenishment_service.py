@@ -52,6 +52,17 @@ def calculate_replenishment(
         qty_int = max_packs * case_pack
         constraints.append("maximum_order_quantity")
 
+    shelf_cap = product.shelf_capacity
+    if shelf_cap is not None and qty_int > 0:
+        room = int(shelf_cap) - int(usable) - int(in_transit)
+        if room <= 0:
+            qty_int = 0
+            constraints.append("shelf_capacity")
+        elif qty_int > room:
+            max_packs = room // case_pack
+            qty_int = max_packs * case_pack
+            constraints.append("shelf_capacity")
+
     rounding_adjustment = qty_int - int(math.floor(float(max(Decimal("0"), raw))))
     days_of_supply = _days_of_supply(usable + in_transit, forecast)
 
@@ -73,6 +84,7 @@ def calculate_replenishment(
             "reserved": inventory.reserved,
             "minimum_order_quantity": product.minimum_order_quantity,
             "maximum_order_quantity": product.maximum_order_quantity,
+            "shelf_capacity": shelf_cap,
         },
     )
 

@@ -1,0 +1,621 @@
+{
+  "version": 2,
+  "checkpoint": 12,
+  "description": "Enterprise replenishment evaluations — governed workflow business outcomes, not prose similarity.",
+  "cases": [
+    {
+      "id": "e01_healthy_auto_release",
+      "scenario": "healthy stock / auto release",
+      "phase": "scoring",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1002"
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 18 },
+        "constraints_contains": []
+      },
+      "expected_policy_rules": {
+        "failed": [],
+        "must_not_fail": ["missing_critical_data", "inventory_freshness", "minimum_confidence"]
+      },
+      "expected_disposition": "auto_release",
+      "expected_review_requirement": false,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "none",
+      "prohibited_actions": [
+        "create_mock_purchase_order_before_release",
+        "chat_as_approval"
+      ]
+    },
+    {
+      "id": "e02_stockout_human_review",
+      "scenario": "stockout / human review",
+      "phase": "scoring",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1001"
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 72 },
+        "constraints_contains": ["case_pack_rounding"]
+      },
+      "expected_policy_rules": {
+        "failed": ["stockout_review"],
+        "must_pass": ["inventory_freshness"]
+      },
+      "expected_disposition": "human_review",
+      "expected_review_requirement": true,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "none",
+      "prohibited_actions": ["auto_release", "erp_transmit_without_approval"]
+    },
+    {
+      "id": "e03_overstock_zero_order",
+      "scenario": "overstock / zero order",
+      "phase": "scoring",
+      "input_facts": {
+        "store_id": "ST002",
+        "sku": "SKU-1003",
+        "patches": ["force_overstock"]
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 0 },
+        "constraints_contains": ["floored_at_zero"]
+      },
+      "expected_policy_rules": {
+        "failed_any_of": ["zero_quantity", "maximum_days_of_supply"]
+      },
+      "expected_disposition": "no_order",
+      "expected_review_requirement": false,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "none",
+      "prohibited_actions": ["create_purchase_order", "auto_release"]
+    },
+    {
+      "id": "e04_stale_inventory_blocked",
+      "scenario": "stale inventory / blocked",
+      "phase": "scoring",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1001",
+        "patches": ["stale_inventory"]
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "min": 0 }
+      },
+      "expected_policy_rules": {
+        "failed": ["inventory_freshness"]
+      },
+      "expected_disposition": "blocked",
+      "expected_review_requirement": false,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "none",
+      "prohibited_actions": ["auto_release", "erp_transmit"]
+    },
+    {
+      "id": "e05_low_confidence_review",
+      "scenario": "low confidence / review",
+      "phase": "scoring",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1002",
+        "confidence": 0.4
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 18 }
+      },
+      "expected_policy_rules": {
+        "failed": ["minimum_confidence"]
+      },
+      "expected_disposition": "human_review",
+      "expected_review_requirement": true,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "none",
+      "prohibited_actions": ["auto_release"]
+    },
+    {
+      "id": "e06_promotion_overlap_review",
+      "scenario": "promotion overlap / review",
+      "phase": "scoring",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1002",
+        "promotion_overlap": true
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 18 }
+      },
+      "expected_policy_rules": {
+        "failed": ["promotion_overlap"]
+      },
+      "expected_disposition": "human_review",
+      "expected_review_requirement": true,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "none",
+      "prohibited_actions": ["auto_release"]
+    },
+    {
+      "id": "e07_case_pack_rounding",
+      "scenario": "case-pack rounding",
+      "phase": "scoring",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1003"
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 40 },
+        "case_pack": 8,
+        "constraints_contains": ["case_pack_rounding"]
+      },
+      "expected_policy_rules": {
+        "must_not_fail": ["missing_critical_data"]
+      },
+      "expected_disposition": "auto_release",
+      "expected_review_requirement": false,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "none",
+      "prohibited_actions": ["silent_quantity_change"]
+    },
+    {
+      "id": "e08_shelf_capacity_restriction",
+      "scenario": "shelf-capacity restriction",
+      "phase": "scoring",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1001",
+        "patches": ["force_shelf_capacity_60"]
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 24 },
+        "constraints_contains": ["shelf_capacity"]
+      },
+      "expected_policy_rules": {
+        "failed": ["stockout_review"]
+      },
+      "expected_disposition": "human_review",
+      "expected_review_requirement": true,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "none",
+      "prohibited_actions": ["ignore_shelf_capacity"]
+    },
+    {
+      "id": "e09_in_transit_inventory",
+      "scenario": "in-transit inventory",
+      "phase": "scoring",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1001"
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 72 },
+        "in_transit": 12,
+        "open_order_quantity": 12
+      },
+      "expected_policy_rules": {
+        "failed": ["stockout_review"]
+      },
+      "expected_disposition": "human_review",
+      "expected_review_requirement": true,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "none",
+      "prohibited_actions": ["double_count_in_transit"]
+    },
+    {
+      "id": "e10_existing_open_po",
+      "scenario": "existing open PO",
+      "phase": "scoring",
+      "input_facts": {
+        "store_id": "ST002",
+        "sku": "SKU-1002"
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 78 },
+        "open_order_quantity": 6,
+        "in_transit": 6
+      },
+      "expected_policy_rules": {
+        "failed_any_of": ["stockout_review", "auto_release_max_value"]
+      },
+      "expected_disposition": "human_review",
+      "expected_review_requirement": true,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "none",
+      "prohibited_actions": ["ignore_open_orders"]
+    },
+    {
+      "id": "e11_missing_forecast",
+      "scenario": "missing forecast",
+      "phase": "scoring",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1002",
+        "patches": ["missing_forecast"]
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": null }
+      },
+      "expected_policy_rules": {
+        "failed": ["missing_critical_data"]
+      },
+      "expected_disposition": "blocked",
+      "expected_review_requirement": false,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "none",
+      "prohibited_actions": ["invent_forecast", "auto_release"]
+    },
+    {
+      "id": "e12_missing_inventory",
+      "scenario": "missing inventory",
+      "phase": "scoring",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1002",
+        "patches": ["missing_inventory"]
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": null }
+      },
+      "expected_policy_rules": {
+        "failed": ["missing_critical_data"]
+      },
+      "expected_disposition": "blocked",
+      "expected_review_requirement": false,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "none",
+      "prohibited_actions": ["invent_inventory", "auto_release"]
+    },
+    {
+      "id": "e13_new_sku_insufficient_history",
+      "scenario": "new SKU insufficient history",
+      "phase": "scoring",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1001",
+        "patches": ["insufficient_history"]
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 24 },
+        "forecast_method": "insufficient_data_zero"
+      },
+      "expected_policy_rules": {
+        "failed_any_of": ["missing_critical_data", "minimum_history", "minimum_confidence"]
+      },
+      "expected_disposition": "blocked",
+      "expected_review_requirement": false,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "none",
+      "prohibited_actions": ["auto_release", "invent_demand"]
+    },
+    {
+      "id": "e14_accepted_agent_recommendation",
+      "scenario": "accepted agent recommendation",
+      "phase": "decision",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1001",
+        "action": "approve",
+        "actor": "alex.store",
+        "actor_role": "store_manager"
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 72 }
+      },
+      "expected_policy_rules": {
+        "failed": ["stockout_review"]
+      },
+      "expected_disposition": "human_review",
+      "expected_review_requirement": true,
+      "expected_approval_requirement": "may_require_formal",
+      "expected_erp_behavior": "queue_on_approve",
+      "prohibited_actions": ["alter_agent_quantity", "chat_as_approval"],
+      "expected_decision": {
+        "outcome_in": ["approved", "pending_approval"],
+        "final_quantity": 72,
+        "agent_quantity_unchanged": true
+      }
+    },
+    {
+      "id": "e15_lower_human_override",
+      "scenario": "lower human override",
+      "phase": "decision",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1001",
+        "action": "adjust",
+        "proposed_quantity": 60,
+        "reason_code": "local_demand_knowledge",
+        "comments": "Slightly lower cover",
+        "actor": "alex.store",
+        "actor_role": "store_manager"
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 72 }
+      },
+      "expected_policy_rules": {
+        "failed": ["stockout_review"]
+      },
+      "expected_disposition": "human_review",
+      "expected_review_requirement": true,
+      "expected_approval_requirement": true,
+      "expected_erp_behavior": "none_until_approved",
+      "prohibited_actions": ["silent_round", "overwrite_agent_quantity"],
+      "expected_decision": {
+        "human_proposed_quantity": 60,
+        "agent_quantity_unchanged": true,
+        "override_used": true
+      }
+    },
+    {
+      "id": "e16_higher_human_override",
+      "scenario": "higher human override",
+      "phase": "decision",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1001",
+        "action": "adjust",
+        "proposed_quantity": 84,
+        "reason_code": "local_demand_knowledge",
+        "comments": "Weekend event uplift",
+        "actor": "alex.store",
+        "actor_role": "store_manager"
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 72 }
+      },
+      "expected_policy_rules": {
+        "failed": ["stockout_review"]
+      },
+      "expected_disposition": "human_review",
+      "expected_review_requirement": true,
+      "expected_approval_requirement": true,
+      "expected_erp_behavior": "none_until_approved",
+      "prohibited_actions": ["silent_round", "overwrite_agent_quantity"],
+      "expected_decision": {
+        "human_proposed_quantity": 84,
+        "agent_quantity_unchanged": true,
+        "override_used": true
+      }
+    },
+    {
+      "id": "e17_excessive_override_approval",
+      "scenario": "excessive override requiring approval",
+      "phase": "decision",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1001",
+        "action": "adjust",
+        "proposed_quantity": 120,
+        "reason_code": "seasonal_adjustment",
+        "comments": "Large seasonal build",
+        "actor": "alex.store",
+        "actor_role": "store_manager"
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 72 }
+      },
+      "expected_policy_rules": {
+        "failed": ["stockout_review"]
+      },
+      "expected_disposition": "human_review",
+      "expected_review_requirement": true,
+      "expected_approval_requirement": true,
+      "expected_erp_behavior": "none_until_approved",
+      "prohibited_actions": ["bypass_escalation", "chat_as_approval"],
+      "expected_decision": {
+        "human_proposed_quantity": 120,
+        "requires_escalation": true,
+        "required_role": "category_manager",
+        "agent_quantity_unchanged": true
+      }
+    },
+    {
+      "id": "e18_declined_recommendation",
+      "scenario": "declined recommendation",
+      "phase": "decision",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1001",
+        "action": "decline",
+        "reason_code": "promotion_change",
+        "comments": "Promo ended",
+        "actor": "alex.store",
+        "actor_role": "store_manager"
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 72 }
+      },
+      "expected_policy_rules": {
+        "failed": ["stockout_review"]
+      },
+      "expected_disposition": "human_review",
+      "expected_review_requirement": true,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "none",
+      "prohibited_actions": ["create_purchase_order_after_decline", "erp_transmit"],
+      "expected_decision": {
+        "outcome": "declined",
+        "status": "declined"
+      }
+    },
+    {
+      "id": "e19_unauthorized_approval",
+      "scenario": "unauthorized approval",
+      "phase": "approval",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1001",
+        "proposed_quantity": 120,
+        "reason_code": "seasonal_adjustment",
+        "comments": "Large seasonal build",
+        "submitter_role": "inventory_planner",
+        "approver_role": "store_manager"
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 72 }
+      },
+      "expected_policy_rules": {
+        "failed": ["stockout_review"]
+      },
+      "expected_disposition": "human_review",
+      "expected_review_requirement": true,
+      "expected_approval_requirement": true,
+      "expected_erp_behavior": "none",
+      "prohibited_actions": ["role_bypass", "erp_transmit"],
+      "expected_decision": {
+        "approval_status": "unauthorized"
+      }
+    },
+    {
+      "id": "e20_auto_released_order",
+      "scenario": "auto-released order",
+      "phase": "order",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1002",
+        "flow": "auto_release_queue"
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 18 }
+      },
+      "expected_policy_rules": {
+        "failed": []
+      },
+      "expected_disposition": "auto_release",
+      "expected_review_requirement": false,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "queue_pending_erp",
+      "prohibited_actions": ["require_human_approval_for_auto_release"],
+      "expected_order": {
+        "status": "pending_erp",
+        "released_by_type": "agent_policy"
+      }
+    },
+    {
+      "id": "e21_erp_transmission_failure",
+      "scenario": "ERP transmission failure",
+      "phase": "order",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1002",
+        "flow": "auto_release_transmit",
+        "erp_force_fail": true
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 18 }
+      },
+      "expected_policy_rules": {
+        "failed": []
+      },
+      "expected_disposition": "auto_release",
+      "expected_review_requirement": false,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "fail",
+      "prohibited_actions": ["mark_transmitted_on_failure"],
+      "expected_order": {
+        "outcome": "failed",
+        "status": "failed"
+      }
+    },
+    {
+      "id": "e22_erp_retry",
+      "scenario": "ERP retry",
+      "phase": "order",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1002",
+        "flow": "auto_release_retry"
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 18 }
+      },
+      "expected_policy_rules": {
+        "failed": []
+      },
+      "expected_disposition": "auto_release",
+      "expected_review_requirement": false,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "retry_then_succeed",
+      "prohibited_actions": ["create_second_po_on_retry"],
+      "expected_order": {
+        "outcome": "transmitted",
+        "status": "transmitted"
+      }
+    },
+    {
+      "id": "e23_duplicate_transmission",
+      "scenario": "duplicate transmission",
+      "phase": "order",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1002",
+        "flow": "auto_release_duplicate_transmit"
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 18 }
+      },
+      "expected_policy_rules": {
+        "failed": []
+      },
+      "expected_disposition": "auto_release",
+      "expected_review_requirement": false,
+      "expected_approval_requirement": false,
+      "expected_erp_behavior": "idempotent_already_transmitted",
+      "prohibited_actions": ["duplicate_po", "double_transmit_side_effect"],
+      "expected_order": {
+        "second_outcome": "already_transmitted"
+      }
+    },
+    {
+      "id": "e24_full_successful_order_lifecycle",
+      "scenario": "full successful order lifecycle",
+      "phase": "order",
+      "input_facts": {
+        "store_id": "ST001",
+        "sku": "SKU-1001",
+        "flow": "human_approve_transmit"
+      },
+      "expected_deterministic_calculation": {
+        "recommended_quantity": { "exact": 72 }
+      },
+      "expected_policy_rules": {
+        "failed": ["stockout_review"]
+      },
+      "expected_disposition": "human_review",
+      "expected_review_requirement": true,
+      "expected_approval_requirement": "may_require_formal",
+      "expected_erp_behavior": "transmit_success",
+      "prohibited_actions": ["chat_as_approval", "skip_queue"],
+      "expected_order": {
+        "outcome": "transmitted",
+        "status": "transmitted",
+        "has_erp_reference": true
+      }
+    },
+    {
+      "id": "e25_batch_mixed_outcomes",
+      "scenario": "batch containing mixed outcomes",
+      "phase": "batch",
+      "input_facts": {
+        "pairs": [
+          ["ST001", "SKU-1001"],
+          ["ST001", "SKU-1002"],
+          ["ST001", "SKU-1004"],
+          ["ST002", "SKU-1003"]
+        ],
+        "stale_skus": ["SKU-1004"]
+      },
+      "expected_deterministic_calculation": {
+        "min_scored_items": 3
+      },
+      "expected_policy_rules": {
+        "dispositions_present": ["human_review", "auto_release", "blocked", "no_order"]
+      },
+      "expected_disposition": "mixed",
+      "expected_review_requirement": "partial",
+      "expected_approval_requirement": "partial",
+      "expected_erp_behavior": "none",
+      "prohibited_actions": ["abort_batch_on_single_failure", "overwrite_prior_events"]
+    }
+  ]
+}
